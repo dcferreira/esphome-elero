@@ -1,5 +1,6 @@
 #include "EleroCover.h"
 #include "esphome/core/log.h"
+#include <cinttypes>
 
 namespace esphome {
 namespace elero {
@@ -52,6 +53,9 @@ void EleroCover::loop() {
       this->last_publish_ = now;
     }
   }
+
+  // Check for silent failures
+  this->check_silent_failure();
 }
 
 bool EleroCover::is_at_target() {
@@ -74,22 +78,53 @@ bool EleroCover::is_at_target() {
 void EleroCover::handle_commands(uint32_t now) {
   if((now - this->last_command_) > ELERO_DELAY_SEND_PACKETS) {
     if(this->commands_to_send_.size() > 0) {
-      this->command_.payload[4] = this->commands_to_send_.front();
+      uint8_t command_byte = this->commands_to_send_.front();
+      this->command_.payload[4] = command_byte;
+      
+      // Log command attempt with readable name
+      const char* cmd_name = "UNKNOWN";
+      switch(command_byte) {
+        case ELERO_COMMAND_COVER_CHECK: cmd_name = "CHECK"; break;
+        case ELERO_COMMAND_COVER_STOP: cmd_name = "STOP"; break;
+        case ELERO_COMMAND_COVER_UP: cmd_name = "UP"; break;
+        case ELERO_COMMAND_COVER_DOWN: cmd_name = "DOWN"; break;
+        case ELERO_COMMAND_COVER_TILT: cmd_name = "TILT"; break;
+        case ELERO_COMMAND_COVER_INT: cmd_name = "INT"; break;
+      }
+      
+      // Track command for silent failure detection
+      uint32_t command_start_time = millis();
+      
       if(this->parent_->send_command(&this->command_)) {
         this->send_packets_++;
         this->send_retries_ = 0;
+        ESP_LOGD(TAG, "CMD SENT: %s (packet %d/%d) to blind 0x%06x", 
+                 cmd_name, this->send_packets_, ELERO_SEND_PACKETS, this->command_.blind_addr);
+        
+        // Track command for silent failure detection (only for action commands, not CHECK)
+        if (command_byte != ELERO_COMMAND_COVER_CHECK) {
+          this->last_command_sent_time_ = command_start_time;
+          this->last_command_sent_ = command_byte;
+          this->waiting_for_response_ = true;
+        }
+        
         if(this->send_packets_ >= ELERO_SEND_PACKETS) {
           this->commands_to_send_.pop();
           this->send_packets_ = 0;
           this->increase_counter();
+          ESP_LOGD(TAG, "CMD COMPLETE: %s command finished, counter incremented to %d", 
+                   cmd_name, this->command_.counter);
         }
       } else {
-        ESP_LOGD(TAG, "Retry #%d for blind 0x%02x", this->send_retries_, this->command_.blind_addr);
+        ESP_LOGW(TAG, "CMD RETRY: %s command failed (retry #%d for blind 0x%06x)", 
+                 cmd_name, this->send_retries_, this->command_.blind_addr);
         this->send_retries_++;
         if(this->send_retries_ > ELERO_SEND_RETRIES) {
-          ESP_LOGE(TAG, "Hit maximum number of retries, giving up.");
+          ESP_LOGE(TAG, "CMD FAILED: %s command failed after %d retries, giving up.", 
+                   cmd_name, ELERO_SEND_RETRIES);
           this->send_retries_ = 0;
           this->commands_to_send_.pop();
+          this->waiting_for_response_ = false; // Clear waiting state on failure
         }
       }
       this->last_command_ = now;
@@ -113,10 +148,48 @@ cover::CoverTraits EleroCover::get_traits() {
 }
 
 void EleroCover::set_rx_state(uint8_t state) {
-  ESP_LOGV(TAG, "Got state: 0x%02x for blind 0x%02x", state, this->command_.blind_addr);
+  // Track response time for debug sensors
+  uint32_t response_time = 0;
+  if (this->waiting_for_response_) {
+    response_time = millis() - this->last_command_sent_time_;
+    this->waiting_for_response_ = false;
+    
+    // Notify parent about response time
+    if (this->parent_) {
+      this->parent_->add_response_time(response_time);
+    }
+  }
+  
+  // Decode state for readable logging
+  const char* state_name = "UNKNOWN";
+  switch(state) {
+    case ELERO_STATE_TOP: state_name = "TOP"; break;
+    case ELERO_STATE_BOTTOM: state_name = "BOTTOM"; break;
+    case ELERO_STATE_INTERMEDIATE: state_name = "INTERMEDIATE"; break;
+    case ELERO_STATE_TILT: state_name = "TILT"; break;
+    case ELERO_STATE_BLOCKING: state_name = "BLOCKING"; break;
+    case ELERO_STATE_OVERHEATED: state_name = "OVERHEATED"; break;
+    case ELERO_STATE_TIMEOUT: state_name = "TIMEOUT"; break;
+    case ELERO_STATE_START_MOVING_UP: state_name = "START_MOVING_UP"; break;
+    case ELERO_STATE_START_MOVING_DOWN: state_name = "START_MOVING_DOWN"; break;
+    case ELERO_STATE_MOVING_UP: state_name = "MOVING_UP"; break;
+    case ELERO_STATE_MOVING_DOWN: state_name = "MOVING_DOWN"; break;
+    case ELERO_STATE_STOPPED: state_name = "STOPPED"; break;
+    case ELERO_STATE_TOP_TILT: state_name = "TOP_TILT"; break;
+    case ELERO_STATE_BOTTOM_TILT: state_name = "BOTTOM_TILT"; break;
+  }
+  
+  if (response_time > 0) {
+    ESP_LOGD(TAG, "STATE RX: %s (0x%02x) from blind 0x%06x (response_time=%" PRIu32 "ms)", 
+             state_name, state, this->command_.blind_addr, response_time);
+  } else {
+    ESP_LOGD(TAG, "STATE RX: %s (0x%02x) from blind 0x%06x", state_name, state, this->command_.blind_addr);
+  }
+  
   float pos = this->position;
   float current_tilt = this->tilt;
   CoverOperation op = this->current_operation;
+  CoverOperation prev_op = this->current_operation;
 
   switch(state) {
   case ELERO_STATE_TOP:
@@ -152,11 +225,51 @@ void EleroCover::set_rx_state(uint8_t state) {
     current_tilt = 0.0;
   }
 
-  if((pos != this->position) || (op != this->current_operation) || (current_tilt != this->tilt)) {
+  bool state_changed = (pos != this->position) || (op != this->current_operation) || (current_tilt != this->tilt);
+  if(state_changed) {
+    ESP_LOGD(TAG, "STATE CHANGE: blind 0x%06x %s -> %s, pos=%.2f->%.2f, op=%d->%d", 
+             this->command_.blind_addr, 
+             (prev_op == COVER_OPERATION_IDLE) ? "IDLE" : 
+             (prev_op == COVER_OPERATION_OPENING) ? "OPENING" : "CLOSING",
+             (op == COVER_OPERATION_IDLE) ? "IDLE" : 
+             (op == COVER_OPERATION_OPENING) ? "OPENING" : "CLOSING",
+             this->position, pos, prev_op, op);
+    
     this->position = pos;
     this->tilt = current_tilt;
     this->current_operation = op;
     this->publish_state();
+  } else {
+    ESP_LOGV(TAG, "STATE UNCHANGED: %s state received but no change needed", state_name);
+  }
+  
+  this->last_rx_ = millis();
+}
+
+void EleroCover::check_silent_failure() {
+  if (this->waiting_for_response_) {
+    uint32_t elapsed = millis() - this->last_command_sent_time_;
+    if (elapsed > RESPONSE_TIMEOUT_MS) {
+      // Silent failure detected!
+      const char* cmd_name = "UNKNOWN";
+      switch(this->last_command_sent_) {
+        case ELERO_COMMAND_COVER_STOP: cmd_name = "STOP"; break;
+        case ELERO_COMMAND_COVER_UP: cmd_name = "UP"; break;
+        case ELERO_COMMAND_COVER_DOWN: cmd_name = "DOWN"; break;
+        case ELERO_COMMAND_COVER_TILT: cmd_name = "TILT"; break;
+        case ELERO_COMMAND_COVER_INT: cmd_name = "INT"; break;
+      }
+      
+      ESP_LOGW(TAG, "SILENT FAILURE: %s command sent to blind 0x%06x but no response after %" PRIu32 "ms", 
+               cmd_name, this->command_.blind_addr, elapsed);
+      
+      // Notify parent about silent failure
+      if (this->parent_) {
+        this->parent_->increment_silent_failures();
+      }
+      
+      this->waiting_for_response_ = false;
+    }
   }
 }
 
@@ -208,28 +321,40 @@ void EleroCover::control(const cover::CoverCall &call) {
 // handle_commands function to only publish a new state
 // if at least the transmission was successful
 void EleroCover::start_movement(CoverOperation dir) {
+  const char* dir_name = (dir == COVER_OPERATION_OPENING) ? "OPENING" : 
+                        (dir == COVER_OPERATION_CLOSING) ? "CLOSING" : "STOP";
+  
   switch(dir) {
     case COVER_OPERATION_OPENING:
-      ESP_LOGV(TAG, "Sending OPEN command");
+      ESP_LOGD(TAG, "MOVEMENT START: OPEN command queued for blind 0x%06x", this->command_.blind_addr);
       this->commands_to_send_.push(this->command_up_);
       // Reset tilt state on movement
       this->tilt = 0.0;
       this->last_operation_ = COVER_OPERATION_OPENING;
     break;
     case COVER_OPERATION_CLOSING:
-      ESP_LOGV(TAG, "Sending CLOSE command");
+      ESP_LOGD(TAG, "MOVEMENT START: CLOSE command queued for blind 0x%06x", this->command_.blind_addr);
       this->commands_to_send_.push(this->command_down_);
       // Reset tilt state on movement
       this->tilt = 0.0;
       this->last_operation_ = COVER_OPERATION_CLOSING;
     break;
     case COVER_OPERATION_IDLE:
+      ESP_LOGD(TAG, "MOVEMENT START: STOP command queued for blind 0x%06x", this->command_.blind_addr);
       this->commands_to_send_.push(this->command_stop_);
     break;
   }
 
-  if(dir == this->current_operation)
+  if(dir == this->current_operation) {
+    ESP_LOGV(TAG, "MOVEMENT SKIP: Already in %s state, ignoring duplicate command", dir_name);
     return;
+  }
+
+  ESP_LOGD(TAG, "MOVEMENT CHANGE: blind 0x%06x %s -> %s at t=%" PRIu32, 
+           this->command_.blind_addr,
+           (this->current_operation == COVER_OPERATION_IDLE) ? "IDLE" : 
+           (this->current_operation == COVER_OPERATION_OPENING) ? "OPENING" : "CLOSING",
+           dir_name, millis());
 
   this->current_operation = dir;
   this->movement_start_ = millis();

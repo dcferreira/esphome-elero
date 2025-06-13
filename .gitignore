@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+.jj/
+.git/
+.DS_Store
+.esphome/

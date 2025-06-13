@@ -47,6 +47,7 @@ class EleroCover : public cover::Cover, public Component {
  protected:
   void control(const cover::CoverCall &call) override;
   void increase_counter();
+  void check_silent_failure();
 
   t_elero_command command_ = {
     .counter = 1,
@@ -72,6 +73,13 @@ class EleroCover : public cover::Cover, public Component {
   uint8_t send_retries_{0};
   uint8_t send_packets_{0};
   cover::CoverOperation last_operation_{cover::COVER_OPERATION_OPENING};
+  
+  // Silent failure detection
+  uint32_t last_command_sent_time_{0};
+  uint8_t last_command_sent_{0};
+  bool waiting_for_response_{false};
+  uint32_t last_rx_{0};  // Timestamp of last received message
+  static constexpr uint32_t RESPONSE_TIMEOUT_MS = 10000;  // 10 seconds
 };
 
 } // namespace elero

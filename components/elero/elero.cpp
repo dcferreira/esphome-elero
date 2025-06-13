@@ -2,6 +2,8 @@
 #include "esphome/core/log.h"
 #include "esphome/core/helpers.h"
 #include "esphome/components/elero/cover/EleroCover.h"
+#include "esphome/components/elero/sensor/EleroSensor.h"
+#include <cinttypes>
 
 namespace esphome {
 namespace elero {
@@ -203,32 +205,58 @@ bool Elero::wait_tx_done() {
 }
 
 bool Elero::transmit() {
-  ESP_LOGVV(TAG, "transmit called for %d data bytes", this->msg_tx_[0]);
+  uint32_t start_time = millis();
+  uint8_t initial_state = this->read_status(CC1101_MARCSTATE);
+  
+  ESP_LOGD(TAG, "TX START: %d bytes, initial_state=0x%02x", this->msg_tx_[0], initial_state);
+  
   //this->flush_and_rx();
   this->write_cmd(CC1101_SRX);
+  uint32_t rx_setup_time = millis();
+  
   if(!this->wait_rx()) {
+    uint8_t failed_state = this->read_status(CC1101_MARCSTATE);
+    ESP_LOGE(TAG, "TX FAILED: RX setup failed, state=0x%02x, duration=%" PRIu32 "ms", failed_state, millis() - start_time);
     return false;
   }
 
   this->write_burst(CC1101_TXFIFO, this->msg_tx_, this->msg_tx_[0] + 1);
   this->write_cmd(CC1101_STX);
+  uint32_t tx_start_time = millis();
 
   if(!this->wait_tx()) {
+    uint8_t failed_state = this->read_status(CC1101_MARCSTATE);
+    ESP_LOGE(TAG, "TX FAILED: TX start failed, state=0x%02x, setup_time=%" PRIu32 "ms, total_time=%" PRIu32 "ms", 
+             failed_state, tx_start_time - rx_setup_time, millis() - start_time);
     this->flush_and_rx();
     return false;
   }
+  
+  uint32_t tx_active_time = millis();
   if(!this->wait_tx_done()) {
+    uint8_t failed_state = this->read_status(CC1101_MARCSTATE);
+    ESP_LOGE(TAG, "TX FAILED: TX completion failed, state=0x%02x, tx_time=%" PRIu32 "ms, total_time=%" PRIu32 "ms", 
+             failed_state, millis() - tx_active_time, millis() - start_time);
     this->flush_and_rx();
     return false;
   }
 
   uint8_t bytes = this->read_status(CC1101_TXBYTES) & 0x7f;
+  uint8_t final_state = this->read_status(CC1101_MARCSTATE);
+  uint32_t total_time = millis() - start_time;
+  
   if(bytes != 0) {
-    ESP_LOGE(TAG, "Error transferring, %d bytes left in buffer", bytes);
+    ESP_LOGE(TAG, "TX FAILED: %d bytes left in buffer, final_state=0x%02x, total_time=%" PRIu32 "ms", 
+             bytes, final_state, total_time);
     this->flush_and_rx();
     return false;
   } else {
-    ESP_LOGV(TAG, "Transmission successful");
+    ESP_LOGD(TAG, "TX SUCCESS: final_state=0x%02x, setup=%" PRIu32 "ms, tx=%" PRIu32 "ms, completion=%" PRIu32 "ms, total=%" PRIu32 "ms",
+             final_state, 
+             rx_setup_time - start_time,
+             tx_active_time - tx_start_time, 
+             millis() - tx_active_time,
+             total_time);
     return true;
   }
 }
@@ -448,6 +476,11 @@ void Elero::interpret_msg() {
     rssi = (float)((this->msg_rx_[length+1])/2-74);
   uint8_t *payload = &this->msg_rx_[19 + dests_len];
   msg_decode(payload);
+  
+  // Update signal quality statistics
+  last_rssi_ = rssi;
+  last_lqi_ = lqi;
+  
   ESP_LOGD(TAG, "rcv'd: len=%02d, cnt=%02d, typ=0x%02x, typ2=0x%02x, hop=0x%02x, syst=0x%02x, chl=%02d, src=0x%06x, bwd=0x%06x, fwd=0x%06x, #dst=%02d, dst=0x%06x, rssi=%2.1f, lqi=%2d, crc=%2d, payload=[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]", length, cnt, typ, typ2, hop, syst, chl, src, bwd, fwd, num_dests, dst, rssi, lqi, crc, payload1, payload2, payload[0], payload[1], payload[2], payload[3], payload[4], payload[5], payload[6], payload[7]);
 
   if((typ == 0xca) || (typ == 0xc9)) { // Status message from a blind
@@ -458,6 +491,9 @@ void Elero::interpret_msg() {
       search->second->set_rx_state(payload[6]);
     }
   }
+  
+  // Update debug sensors when we receive messages
+  this->update_debug_sensors();
 }
 
 void Elero::register_cover(EleroCover *cover) {
@@ -471,7 +507,21 @@ void Elero::register_cover(EleroCover *cover) {
 }
 
 bool Elero::send_command(t_elero_command *cmd) {
-  ESP_LOGVV(TAG, "send_command called");
+  // Decode command type for logging
+  const char* cmd_name = "UNKNOWN";
+  uint8_t command_byte = cmd->payload[4];
+  switch(command_byte) {
+    case ELERO_COMMAND_COVER_CHECK: cmd_name = "CHECK"; break;
+    case ELERO_COMMAND_COVER_STOP: cmd_name = "STOP"; break;
+    case ELERO_COMMAND_COVER_UP: cmd_name = "UP"; break;
+    case ELERO_COMMAND_COVER_DOWN: cmd_name = "DOWN"; break;
+    case ELERO_COMMAND_COVER_TILT: cmd_name = "TILT"; break;
+    case ELERO_COMMAND_COVER_INT: cmd_name = "INT"; break;
+  }
+  
+  ESP_LOGD(TAG, "CMD SEND: %s (0x%02x) to blind 0x%06x, counter=%d, channel=%d", 
+           cmd_name, command_byte, cmd->blind_addr, cmd->counter, cmd->channel);
+  
   uint16_t code = (0x00 - (cmd->counter * 0x708f)) & 0xffff;
   this->msg_tx_[0] = 0x1d; // message length
   this->msg_tx_[1] = cmd->counter; // message counter
@@ -502,7 +552,54 @@ bool Elero::send_command(t_elero_command *cmd) {
   msg_encode(payload);
 
   ESP_LOGV(TAG, "send: len=%02d, cnt=%02d, typ=0x%02x, typ2=0x%02x, hop=0x%02x, syst=0x%02x, chl=%02d, src=0x%02x%02x%02x, bwd=0x%02x%02x%02x, fwd=0x%02x%02x%02x, #dst=%02d, dst=0x%02x%02x%02x, payload=[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]", this->msg_tx_[0], this->msg_tx_[1], this->msg_tx_[2], this->msg_tx_[3], this->msg_tx_[4], this->msg_tx_[5], this->msg_tx_[6], this->msg_tx_[7], this->msg_tx_[8], this->msg_tx_[9], this->msg_tx_[10], this->msg_tx_[11], this->msg_tx_[12], this->msg_tx_[13], this->msg_tx_[14], this->msg_tx_[15], this->msg_tx_[16], this->msg_tx_[17], this->msg_tx_[18], this->msg_tx_[19], this->msg_tx_[20], this->msg_tx_[21], this->msg_tx_[22], this->msg_tx_[23], this->msg_tx_[24], this->msg_tx_[25], this->msg_tx_[26], this->msg_tx_[27], this->msg_tx_[28], this->msg_tx_[29]);
-  return transmit();
+  
+  bool result = transmit();
+  
+  // Update statistics
+  commands_sent_count_++;
+  if (result) {
+    last_successful_communication_ = millis();
+  } else {
+    commands_failed_count_++;
+  }
+  
+  // Update debug sensors after every command
+  this->update_debug_sensors();
+  
+  ESP_LOGD(TAG, "CMD RESULT: %s command %s (total_sent=%d, total_failed=%d)", 
+           cmd_name, result ? "SUCCESS" : "FAILED", commands_sent_count_, commands_failed_count_);
+  return result;
+}
+
+void Elero::update_debug_sensors() {
+  // Calculate success rate
+  float success_rate = 0.0;
+  if (commands_sent_count_ > 0) {
+    success_rate = ((float)(commands_sent_count_ - commands_failed_count_) / commands_sent_count_) * 100.0;
+  }
+  
+  // Calculate average response time
+  float avg_response_time = 0.0;
+  if (response_count_ > 0) {
+    avg_response_time = (float)total_response_time_ / response_count_;
+  }
+  
+  // Update sensors if they exist
+  if (silent_failures_sensor_ != nullptr) {
+    silent_failures_sensor_->update_value(silent_failures_count_);
+  }
+  
+  if (success_rate_sensor_ != nullptr) {
+    success_rate_sensor_->update_value(success_rate);
+  }
+  
+  if (avg_response_time_sensor_ != nullptr) {
+    avg_response_time_sensor_->update_value(avg_response_time);
+  }
+  
+  if (last_rssi_sensor_ != nullptr) {
+    last_rssi_sensor_->update_value(last_rssi_);
+  }
 }
 
 }  // namespace elero

@@ -1,0 +1,51 @@
+esphome:
+  name: elero-blind-control
+  platform: ESP32
+  board: esp32dev
+
+wifi:
+  ssid: "YourWiFiSSID"
+  password: "YourWiFiPassword"
+
+api:
+logger:
+ota:
+
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+  miso_pin: GPIO19
+
+elero:
+  id: elero_transceiver
+  gdo0_pin: GPIO21
+  cs_pin: GPIO5
+
+cover:
+  - platform: elero
+    elero_id: elero_transceiver
+    name: "Living Room Blind"
+    blind_address: 0x123456
+    remote_address: 0x789ABC
+    channel: 1
+    
+# Add debug sensors for monitoring blind control reliability
+sensor:
+  - platform: elero
+    elero_id: elero_transceiver
+    
+    # Count of commands sent successfully but blind didn't respond
+    silent_failures:
+      name: "Elero Silent Failures"
+      
+    # Overall success rate of commands (percentage)
+    success_rate:
+      name: "Elero Success Rate"
+      
+    # Average response time from command to blind response
+    average_response_time:
+      name: "Elero Avg Response Time" 
+      
+    # Signal strength of last received message
+    last_rssi:
+      name: "Elero Last RSSI" 

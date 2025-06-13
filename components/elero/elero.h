@@ -57,6 +57,7 @@ typedef struct {
 } t_elero_command;
 
 class EleroCover;
+class EleroSensor;
 
 class Elero : public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARITY_LOW,
                                     spi::CLOCK_PHASE_LEADING, spi::DATA_RATE_2MHZ>,
@@ -91,6 +92,34 @@ class Elero : public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARIT
   void set_freq0(uint8_t freq) { freq0_ = freq; }
   void set_freq1(uint8_t freq) { freq1_ = freq; }
   void set_freq2(uint8_t freq) { freq2_ = freq; }
+  
+  // Debug statistics getters
+  uint32_t get_commands_sent_count() const { return commands_sent_count_; }
+  uint32_t get_commands_failed_count() const { return commands_failed_count_; }
+  float get_last_rssi() const { return last_rssi_; }
+  uint8_t get_last_lqi() const { return last_lqi_; }
+  uint8_t get_cc1101_state() const { return const_cast<Elero*>(this)->read_status(CC1101_MARCSTATE); }
+  uint32_t get_last_successful_communication() const { return last_successful_communication_; }
+  
+  // Debug sensor setters
+  void set_silent_failures_sensor(EleroSensor *sensor) { silent_failures_sensor_ = sensor; }
+  void set_success_rate_sensor(EleroSensor *sensor) { success_rate_sensor_ = sensor; }
+  void set_avg_response_time_sensor(EleroSensor *sensor) { avg_response_time_sensor_ = sensor; }
+  void set_last_rssi_sensor(EleroSensor *sensor) { last_rssi_sensor_ = sensor; }
+  
+  // Methods for covers to update metrics
+  void increment_silent_failures() { 
+    silent_failures_count_++; 
+    update_debug_sensors(); 
+  }
+  void add_response_time(uint32_t response_time) {
+    total_response_time_ += response_time;
+    response_count_++;
+    update_debug_sensors();
+  }
+  
+  // Update debug sensors
+  void update_debug_sensors();
 
  private:
   uint8_t count_bits(uint8_t byte);
@@ -114,6 +143,24 @@ class Elero : public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARIT
   InternalGPIOPin *gdo0_pin_{nullptr};
   ISRInternalGPIOPin gdo0_irq_pin_{nullptr};
   std::map<uint32_t, EleroCover*> address_to_cover_mapping_;
+  
+  // Debug statistics
+  uint32_t commands_sent_count_{0};
+  uint32_t commands_failed_count_{0};
+  uint32_t silent_failures_count_{0};
+  float last_rssi_{0.0};
+  uint8_t last_lqi_{0};
+  uint32_t last_successful_communication_{0};
+  
+  // Response time tracking
+  uint32_t total_response_time_{0};
+  uint32_t response_count_{0};
+  
+  // Debug sensors
+  EleroSensor *silent_failures_sensor_{nullptr};
+  EleroSensor *success_rate_sensor_{nullptr};
+  EleroSensor *avg_response_time_sensor_{nullptr};
+  EleroSensor *last_rssi_sensor_{nullptr};
 };
 
 }  // namespace elero
