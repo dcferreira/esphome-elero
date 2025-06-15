@@ -80,6 +80,10 @@ class EleroCover : public cover::Cover, public Component {
   bool waiting_for_response_{false};
   uint32_t last_rx_{0};  // Timestamp of last received message
   static constexpr uint32_t RESPONSE_TIMEOUT_MS = 10000;  // 10 seconds
+  
+  // Counter recovery
+  uint8_t counter_recovery_attempts_{0};
+  uint8_t original_counter_{0};
 };
 
 } // namespace elero
