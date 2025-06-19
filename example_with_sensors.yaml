@@ -28,6 +28,7 @@ cover:
     blind_address: 0x123456
     remote_address: 0x789ABC
     channel: 1
+    check_interval: 1min  # Send CHECK command every minute to keep counter in sync
     
 # Debug sensors for monitoring blind control reliability
 sensor:

@@ -1,9 +1,13 @@
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome.components import cover
+from esphome.const import (
+    CONF_CHANNEL,
+    CONF_CLOSE_DURATION,
+    CONF_OPEN_DURATION,
+)
 
-from esphome.const import CONF_ID, CONF_NAME, CONF_CHANNEL, CONF_OPEN_DURATION, CONF_CLOSE_DURATION
-from .. import elero_ns, elero, CONF_ELERO_ID
+from .. import CONF_ELERO_ID, elero, elero_ns
 
 DEPENDENCIES = ["elero"]
 CODEOWNERS = ["@andyboeh"]
@@ -22,36 +26,68 @@ CONF_COMMAND_CHECK = "command_check"
 CONF_COMMAND_TILT = "command_tilt"
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_SUPPORTS_TILT = "supports_tilt"
+CONF_CHECK_INTERVAL = "check_interval"
 
 EleroCover = elero_ns.class_("EleroCover", cover.Cover, cg.Component)
+
 
 def poll_interval(value):
     if value == "never":
         return 4294967295  # uint32_t max
     return cv.positive_time_period_milliseconds(value)
 
-CONFIG_SCHEMA = cover.cover_schema(EleroCover).extend(
-    {
-        cv.GenerateID(CONF_ELERO_ID): cv.use_id(elero),
-        cv.Required(CONF_BLIND_ADDRESS): cv.hex_int_range(min=0x0, max=0xffffff),
-        cv.Required(CONF_CHANNEL): cv.int_range(min=0, max=255),
-        cv.Required(CONF_REMOTE_ADDRESS): cv.hex_int_range(min=0x0, max=0xffffff),
-        cv.Optional(CONF_POLL_INTERVAL, default="5min"): poll_interval,
-        cv.Optional(CONF_OPEN_DURATION, default="0s"): cv.positive_time_period_milliseconds,
-        cv.Optional(CONF_CLOSE_DURATION, default="0s"): cv.positive_time_period_milliseconds,
-        cv.Optional(CONF_PAYLOAD_1, default=0x00): cv.hex_int_range(min=0x0, max=0xff),
-        cv.Optional(CONF_PAYLOAD_2, default=0x04): cv.hex_int_range(min=0x0, max=0xff),
-        cv.Optional(CONF_PCKINF_1, default=0x6a): cv.hex_int_range(min=0x0, max=0xff),
-        cv.Optional(CONF_PCKINF_2, default=0x00): cv.hex_int_range(min=0x0, max=0xff),
-        cv.Optional(CONF_HOP, default=0x0a): cv.hex_int_range(min=0x0, max=0xff),
-        cv.Optional(CONF_COMMAND_UP, default=0x20): cv.hex_int_range(min=0x0, max=0xff),
-        cv.Optional(CONF_COMMAND_DOWN, default=0x40): cv.hex_int_range(min=0x0, max=0xff),
-        cv.Optional(CONF_COMMAND_STOP, default=0x10): cv.hex_int_range(min=0x0, max=0xff),
-        cv.Optional(CONF_COMMAND_CHECK, default=0x00): cv.hex_int_range(min=0x0, max=0xff),
-        cv.Optional(CONF_COMMAND_TILT, default=0x24): cv.hex_int_range(min=0x0, max=0xff),
-        cv.Optional(CONF_SUPPORTS_TILT, default=False): cv.boolean,
-    }
-).extend(cv.COMPONENT_SCHEMA)
+
+CONFIG_SCHEMA = (
+    cover.cover_schema(EleroCover)
+    .extend(
+        {
+            cv.GenerateID(CONF_ELERO_ID): cv.use_id(elero),
+            cv.Required(CONF_BLIND_ADDRESS): cv.hex_int_range(min=0x0, max=0xFFFFFF),
+            cv.Required(CONF_CHANNEL): cv.int_range(min=0, max=255),
+            cv.Required(CONF_REMOTE_ADDRESS): cv.hex_int_range(min=0x0, max=0xFFFFFF),
+            cv.Optional(CONF_POLL_INTERVAL, default="5min"): poll_interval,
+            cv.Optional(
+                CONF_OPEN_DURATION, default="0s"
+            ): cv.positive_time_period_milliseconds,
+            cv.Optional(
+                CONF_CLOSE_DURATION, default="0s"
+            ): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_PAYLOAD_1, default=0x00): cv.hex_int_range(
+                min=0x0, max=0xFF
+            ),
+            cv.Optional(CONF_PAYLOAD_2, default=0x04): cv.hex_int_range(
+                min=0x0, max=0xFF
+            ),
+            cv.Optional(CONF_PCKINF_1, default=0x6A): cv.hex_int_range(
+                min=0x0, max=0xFF
+            ),
+            cv.Optional(CONF_PCKINF_2, default=0x00): cv.hex_int_range(
+                min=0x0, max=0xFF
+            ),
+            cv.Optional(CONF_HOP, default=0x0A): cv.hex_int_range(min=0x0, max=0xFF),
+            cv.Optional(CONF_COMMAND_UP, default=0x20): cv.hex_int_range(
+                min=0x0, max=0xFF
+            ),
+            cv.Optional(CONF_COMMAND_DOWN, default=0x40): cv.hex_int_range(
+                min=0x0, max=0xFF
+            ),
+            cv.Optional(CONF_COMMAND_STOP, default=0x10): cv.hex_int_range(
+                min=0x0, max=0xFF
+            ),
+            cv.Optional(CONF_COMMAND_CHECK, default=0x00): cv.hex_int_range(
+                min=0x0, max=0xFF
+            ),
+            cv.Optional(CONF_COMMAND_TILT, default=0x24): cv.hex_int_range(
+                min=0x0, max=0xFF
+            ),
+            cv.Optional(CONF_SUPPORTS_TILT, default=False): cv.boolean,
+            cv.Optional(
+                CONF_CHECK_INTERVAL, default="1min"
+            ): cv.positive_time_period_milliseconds,
+        }
+    )
+    .extend(cv.COMPONENT_SCHEMA)
+)
 
 
 async def to_code(config):
@@ -77,3 +113,6 @@ async def to_code(config):
     cg.add(var.set_command_tilt(config[CONF_COMMAND_TILT]))
     cg.add(var.set_poll_interval(config[CONF_POLL_INTERVAL]))
     cg.add(var.set_supports_tilt(config[CONF_SUPPORTS_TILT]))
+    cg.add(var.set_check_interval(config[CONF_CHECK_INTERVAL]))
+
+    cg.add(parent.register_cover(var))

@@ -36,8 +36,9 @@ class EleroCover : public cover::Cover, public Component {
   void set_close_duration(uint32_t dur) { this->close_duration_ = dur; }
   void set_open_duration(uint32_t dur) { this->open_duration_ = dur; }
   void set_poll_interval(uint32_t intvl) { this->poll_intvl_ = intvl; }
-  uint32_t get_blind_address() { return this->command_.blind_addr; }
   void set_supports_tilt(bool tilt) { this->supports_tilt_ = tilt; }
+  void set_check_interval(uint32_t check_interval_ms) { this->check_interval_ms_ = check_interval_ms; }
+  uint32_t get_blind_address() { return this->command_.blind_addr; }
   void set_rx_state(uint8_t state);
   void handle_commands(uint32_t now);
   void recompute_position();
@@ -85,6 +86,9 @@ class EleroCover : public cover::Cover, public Component {
   // Counter recovery
   uint8_t counter_recovery_attempts_{0};
   uint8_t original_counter_{0};
+
+  uint32_t check_interval_ms_{60000}; // Default 1 minute
+  uint32_t last_check_time_{0};
 };
 
 } // namespace elero
