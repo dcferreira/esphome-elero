@@ -544,5 +544,43 @@ void EleroCover::recompute_position() {
 
 }
 
+void EleroCover::sync_external_command(cover::CoverOperation op) {
+  // This method is called when we overhear a command from a physical remote
+  // We need to sync our internal state to match what the physical remote is doing
+  
+  if (op == this->current_operation) {
+    ESP_LOGV(TAG, "SYNC: Already in requested state %d, no change needed", (int)op);
+    return;
+  }
+  
+  const char* op_name = (op == cover::COVER_OPERATION_OPENING) ? "OPENING" : 
+                       (op == cover::COVER_OPERATION_CLOSING) ? "CLOSING" : "IDLE";
+  
+  ESP_LOGD(TAG, "SYNC: External command changing operation from %d to %d (%s) for blind 0x%06x", 
+           (int)this->current_operation, (int)op, op_name, this->command_.blind_addr);
+  
+  // Update our operation state
+  this->current_operation = op;
+  
+  // If starting movement, reset timing
+  if (op != cover::COVER_OPERATION_IDLE) {
+    this->movement_start_ = millis();
+    this->last_recompute_time_ = millis();
+    
+    // Set appropriate target position based on operation
+    // For external commands, we assume full movement unless stopped
+    if (op == cover::COVER_OPERATION_OPENING) {
+      this->target_position_ = COVER_OPEN;
+      this->last_operation_ = cover::COVER_OPERATION_OPENING;
+    } else if (op == cover::COVER_OPERATION_CLOSING) {
+      this->target_position_ = COVER_CLOSED;
+      this->last_operation_ = cover::COVER_OPERATION_CLOSING;
+    }
+  }
+  
+  // Publish the updated state
+  this->publish_state();
+}
+
 } // namespace elero
 } // namespace esphome

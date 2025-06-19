@@ -492,6 +492,46 @@ void Elero::interpret_msg() {
     }
   }
   
+  // Handle remote control commands (0x6a messages)
+  if(typ == 0x6a) { // Command message from a remote
+    // Check if this is directed to one of our blinds
+    auto search = this->address_to_cover_mapping_.find(dst);
+    if(search != this->address_to_cover_mapping_.end()) {
+      EleroCover* cover = search->second;
+      
+      // Check if the command comes from the configured remote for this blind
+      // We need to get the remote address from the cover to verify
+      uint8_t command_byte = payload[4];
+      
+      // Decode command for logging
+      const char* cmd_name = "UNKNOWN";
+      switch(command_byte) {
+        case ELERO_COMMAND_COVER_STOP: cmd_name = "STOP"; break;
+        case ELERO_COMMAND_COVER_UP: cmd_name = "UP"; break;
+        case ELERO_COMMAND_COVER_DOWN: cmd_name = "DOWN"; break;
+        case ELERO_COMMAND_COVER_TILT: cmd_name = "TILT"; break;
+        case ELERO_COMMAND_COVER_INT: cmd_name = "INT"; break;
+        case ELERO_COMMAND_COVER_CHECK: cmd_name = "CHECK"; break;
+      }
+      
+      ESP_LOGD(TAG, "OVERHEARD CMD: %s (0x%02x) from remote 0x%06x to blind 0x%06x", 
+               cmd_name, command_byte, src, dst);
+      
+      // Update cover operation based on overheard command
+      // This helps keep ESPHome in sync when physical remote is used
+      if(command_byte == cover->get_command_up()) {
+        ESP_LOGD(TAG, "SYNC: Physical remote opened blind 0x%06x, updating ESPHome state", dst);
+        cover->sync_external_command(cover::COVER_OPERATION_OPENING);
+      } else if(command_byte == cover->get_command_down()) {
+        ESP_LOGD(TAG, "SYNC: Physical remote closed blind 0x%06x, updating ESPHome state", dst);
+        cover->sync_external_command(cover::COVER_OPERATION_CLOSING);
+      } else if(command_byte == cover->get_command_stop()) {
+        ESP_LOGD(TAG, "SYNC: Physical remote stopped blind 0x%06x, updating ESPHome state", dst);
+        cover->sync_external_command(cover::COVER_OPERATION_IDLE);
+      }
+    }
+  }
+  
   // Update debug sensors when we receive messages
   this->update_debug_sensors();
 }

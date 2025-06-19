@@ -46,6 +46,12 @@ class EleroCover : public cover::Cover, public Component {
   bool is_at_target();
   bool is_in_recovery() const { return counter_recovery_attempts_ > 0; }
   
+  // Methods for handling external commands from physical remotes
+  uint8_t get_command_up() const { return command_up_; }
+  uint8_t get_command_down() const { return command_down_; }
+  uint8_t get_command_stop() const { return command_stop_; }
+  void sync_external_command(cover::CoverOperation op);
+  
  protected:
   void control(const cover::CoverCall &call) override;
   void increase_counter();

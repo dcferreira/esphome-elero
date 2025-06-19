@@ -4,3 +4,5 @@ __pycache__/
 .git/
 .DS_Store
 .esphome/
+
+*.log
