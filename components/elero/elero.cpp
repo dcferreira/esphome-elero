@@ -600,6 +600,133 @@ void Elero::update_debug_sensors() {
   if (last_rssi_sensor_ != nullptr) {
     last_rssi_sensor_->update_value(last_rssi_);
   }
+  
+  // Update blinds in recovery count
+  update_blinds_in_recovery_count();
+  
+  // Update time-based per-blind sensors
+  update_per_blind_time_sensors();
+}
+
+void Elero::update_blinds_in_recovery_count() {
+  if (blinds_in_recovery_sensor_ == nullptr) {
+    return;
+  }
+  
+  // Count how many covers are currently in recovery mode
+  uint32_t recovery_count = 0;
+  for (auto& cover_pair : address_to_cover_mapping_) {
+    if (cover_pair.second->is_in_recovery()) {
+      recovery_count++;
+    }
+  }
+  
+  blinds_in_recovery_sensor_->update_value(recovery_count);
+}
+
+void Elero::register_per_blind_sensor(uint32_t blind_address, const std::string& sensor_type, EleroSensor* sensor) {
+  // Initialize per-blind stats if not exists
+  if (per_blind_stats_.find(blind_address) == per_blind_stats_.end()) {
+    per_blind_stats_[blind_address] = PerBlindStats();
+    ESP_LOGD("elero", "Created new per-blind stats for blind 0x%06x", blind_address);
+  }
+  
+  // Store the sensor reference
+  per_blind_stats_[blind_address].sensors[sensor_type] = sensor;
+  
+  ESP_LOGD("elero", "Registered per-blind sensor: %s for blind 0x%06x", sensor_type.c_str(), blind_address);
+  
+  // Initialize sensor with current value
+  PerBlindStats& stats = per_blind_stats_[blind_address];
+  if (sensor_type == "recovery_attempts") {
+    sensor->update_value(stats.recovery_attempts);
+    ESP_LOGD("elero", "Initialized %s sensor for blind 0x%06x with value: %d", sensor_type.c_str(), blind_address, stats.recovery_attempts);
+  } else if (sensor_type == "recovery_successes") {
+    sensor->update_value(stats.recovery_successes);
+    ESP_LOGD("elero", "Initialized %s sensor for blind 0x%06x with value: %d", sensor_type.c_str(), blind_address, stats.recovery_successes);
+  } else if (sensor_type == "current_counter") {
+    sensor->update_value(stats.current_counter);
+    ESP_LOGD("elero", "Initialized %s sensor for blind 0x%06x with value: %d", sensor_type.c_str(), blind_address, stats.current_counter);
+  } else if (sensor_type == "last_working_counter") {
+    sensor->update_value(stats.last_working_counter);
+    ESP_LOGD("elero", "Initialized %s sensor for blind 0x%06x with value: %d", sensor_type.c_str(), blind_address, stats.last_working_counter);
+  } else if (sensor_type == "seconds_since_last_response") {
+    uint32_t seconds_since = stats.last_response_time > 0 ? (millis() - stats.last_response_time) / 1000 : 0;
+    sensor->update_value(seconds_since);
+    ESP_LOGD("elero", "Initialized %s sensor for blind 0x%06x with value: %d", sensor_type.c_str(), blind_address, (int)seconds_since);
+  }
+}
+
+void Elero::update_per_blind_current_counter(uint32_t blind_address, uint8_t counter) {
+  auto it = per_blind_stats_.find(blind_address);
+  if (it != per_blind_stats_.end()) {
+    PerBlindStats& stats = it->second;
+    stats.current_counter = counter;
+    
+    // Update current counter sensor if it exists
+    if (stats.sensors["current_counter"] != nullptr) {
+      stats.sensors["current_counter"]->update_value(stats.current_counter);
+      ESP_LOGD("elero", "Updated current_counter sensor for blind 0x%06x: %d", blind_address, counter);
+    }
+  } else {
+    ESP_LOGD("elero", "No per-blind stats found for blind 0x%06x when updating current counter", blind_address);
+  }
+}
+
+void Elero::update_per_blind_time_sensors() {
+  for (auto& pair : per_blind_stats_) {
+    PerBlindStats& stats = pair.second;
+    
+    // Update time-based sensors if they exist
+    if (stats.sensors["seconds_since_last_response"] != nullptr) {
+      uint32_t seconds_since = (millis() - stats.last_response_time) / 1000;
+      stats.sensors["seconds_since_last_response"]->update_value(seconds_since);
+    }
+  }
+}
+
+void Elero::update_per_blind_last_response_time(uint32_t blind_address) {
+  auto it = per_blind_stats_.find(blind_address);
+  if (it != per_blind_stats_.end()) {
+    it->second.last_response_time = millis();
+  }
+}
+
+void Elero::update_per_blind_counter_stats(uint32_t blind_address, uint8_t counter, bool recovery_success, const std::string& strategy) {
+  auto it = per_blind_stats_.find(blind_address);
+  if (it != per_blind_stats_.end()) {
+    PerBlindStats& stats = it->second;
+    
+    stats.current_counter = counter;
+    
+    if (recovery_success) {
+      stats.recovery_successes++;
+      stats.last_working_counter = counter;
+      stats.last_strategy_success = strategy;
+    } else {
+      stats.recovery_attempts++;
+    }
+    
+    stats.last_response_time = millis();
+    
+    // Update individual sensors if they exist
+    if (stats.sensors["recovery_attempts"] != nullptr) {
+      stats.sensors["recovery_attempts"]->update_value(stats.recovery_attempts);
+    }
+    if (stats.sensors["recovery_successes"] != nullptr) {
+      stats.sensors["recovery_successes"]->update_value(stats.recovery_successes);
+    }
+    if (stats.sensors["current_counter"] != nullptr) {
+      stats.sensors["current_counter"]->update_value(stats.current_counter);
+    }
+    if (stats.sensors["last_working_counter"] != nullptr) {
+      stats.sensors["last_working_counter"]->update_value(stats.last_working_counter);
+    }
+    if (stats.sensors["seconds_since_last_response"] != nullptr) {
+      uint32_t seconds_since = (millis() - stats.last_response_time) / 1000;
+      stats.sensors["seconds_since_last_response"]->update_value(seconds_since);
+    }
+  }
 }
 
 }  // namespace elero

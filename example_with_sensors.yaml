@@ -29,8 +29,9 @@ cover:
     remote_address: 0x789ABC
     channel: 1
     
-# Add debug sensors for monitoring blind control reliability
+# Debug sensors for monitoring blind control reliability
 sensor:
+  # System-wide sensors
   - platform: elero
     elero_id: elero_transceiver
     
@@ -48,4 +49,14 @@ sensor:
       
     # Signal strength of last received message
     last_rssi:
-      name: "Elero Last RSSI" 
+      name: "Elero Last RSSI"
+      
+    # Number of blinds currently in counter recovery mode
+    blinds_in_recovery:
+      name: "Elero Blinds In Recovery"
+  
+  # Per-blind counter recovery sensors (creates all sensors automatically)
+  - platform: elero
+    elero_id: elero_transceiver
+    blind_address: 0x123456  # Must match the cover's blind_address
+    name: "Living Room Blind"  # Creates sensors with this prefix 

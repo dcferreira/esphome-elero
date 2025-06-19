@@ -43,6 +43,7 @@ class EleroCover : public cover::Cover, public Component {
   void recompute_position();
   void start_movement(cover::CoverOperation op);
   bool is_at_target();
+  bool is_in_recovery() const { return counter_recovery_attempts_ > 0; }
   
  protected:
   void control(const cover::CoverCall &call) override;

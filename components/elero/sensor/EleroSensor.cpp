@@ -22,6 +22,27 @@ void EleroSensor::dump_config() {
     case LAST_RSSI:
       metric_name = "Last RSSI";
       break;
+    case BLINDS_IN_RECOVERY:
+      metric_name = "Blinds In Recovery";
+      break;
+    case COUNTER_RECOVERY_ATTEMPTS:
+      metric_name = "Counter Recovery Attempts";
+      break;
+    case COUNTER_RECOVERY_SUCCESSES:
+      metric_name = "Counter Recovery Successes";
+      break;
+    case CURRENT_COUNTER:
+      metric_name = "Current Counter";
+      break;
+    case LAST_WORKING_COUNTER:
+      metric_name = "Last Working Counter";
+      break;
+    case RECOVERY_STRATEGY_SUCCESS:
+      metric_name = "Recovery Strategy Success";
+      break;
+    case SECONDS_SINCE_LAST_RESPONSE:
+      metric_name = "Seconds Since Last Response";
+      break;
     default:
       metric_name = "Unknown";
       break;

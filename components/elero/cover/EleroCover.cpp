@@ -114,6 +114,11 @@ void EleroCover::handle_commands(uint32_t now) {
           this->increase_counter();
           ESP_LOGD(TAG, "CMD COMPLETE: %s command finished, counter incremented to %d", 
                    cmd_name, this->command_.counter);
+          
+          // Update current counter for per-blind sensors
+          if (this->parent_) {
+            this->parent_->update_per_blind_current_counter(this->command_.blind_addr, this->command_.counter);
+          }
         }
       } else {
         ESP_LOGW(TAG, "CMD RETRY: %s command failed (retry #%d for blind 0x%06x)", 
@@ -156,14 +161,32 @@ void EleroCover::set_rx_state(uint8_t state) {
     
     // Reset counter recovery on successful response
     if (this->counter_recovery_attempts_ > 0) {
-      ESP_LOGI(TAG, "COUNTER RECOVERY SUCCESS: blind 0x%06x responded, counter %d is working", 
-               this->command_.blind_addr, this->command_.counter);
+      const char* strategy_name = "unknown";
+      switch(this->counter_recovery_attempts_) {
+        case 1: strategy_name = "decrement"; break;
+        case 2: strategy_name = "increment"; break;
+        case 3: strategy_name = "reset"; break;
+      }
+      
+      ESP_LOGI(TAG, "[COUNTER_RECOVERY] SUCCESS: blind 0x%06x responded after %d attempts, counter %d working (%s strategy)", 
+               this->command_.blind_addr, this->counter_recovery_attempts_, this->command_.counter, strategy_name);
+      
+      // Update parent stats for per-blind sensors
+      if (this->parent_) {
+        this->parent_->update_per_blind_counter_stats(this->command_.blind_addr, this->command_.counter, true, strategy_name);
+      }
+      
       this->counter_recovery_attempts_ = 0;
     }
     
     // Notify parent about response time
     if (this->parent_) {
       this->parent_->add_response_time(response_time);
+    }
+  } else {
+    // Even if not waiting for response, update last response time for time-based sensors
+    if (this->parent_) {
+      this->parent_->update_per_blind_last_response_time(this->command_.blind_addr);
     }
   }
   
@@ -270,32 +293,41 @@ void EleroCover::check_silent_failure() {
       // Start counter recovery if this is the first attempt
       if (this->counter_recovery_attempts_ == 0) {
         this->original_counter_ = this->command_.counter;
-        ESP_LOGW(TAG, "SILENT FAILURE: %s command to blind 0x%06x, starting counter recovery (original=%d)", 
-                 cmd_name, this->command_.blind_addr, this->original_counter_);
+        ESP_LOGI(TAG, "[COUNTER_RECOVERY] Starting recovery for blind 0x%06x - %s command failed, original_counter=%d", 
+                 this->command_.blind_addr, cmd_name, this->original_counter_);
       }
       
       // Try different counter recovery strategies
       if (this->counter_recovery_attempts_ < 3) {
         uint8_t new_counter = this->original_counter_;
+        const char* strategy_name = "unknown";
         
         switch(this->counter_recovery_attempts_) {
           case 0: // Try decrementing by 1 (maybe we got ahead)
             new_counter = (this->original_counter_ > 1) ? this->original_counter_ - 1 : 255;
+            strategy_name = "decrement";
             break;
           case 1: // Try incrementing by 2 (maybe we missed commands)
             new_counter = (this->original_counter_ < 254) ? this->original_counter_ + 2 : 
                          (this->original_counter_ == 254) ? 255 : 1;
+            strategy_name = "increment";
             break;
           case 2: // Try reset to 1
             new_counter = 1;
+            strategy_name = "reset";
             break;
         }
         
         this->command_.counter = new_counter;
         this->counter_recovery_attempts_++;
         
-        ESP_LOGW(TAG, "COUNTER RECOVERY: attempt %d, trying counter %d for blind 0x%06x", 
-                 this->counter_recovery_attempts_, new_counter, this->command_.blind_addr);
+        ESP_LOGI(TAG, "[COUNTER_RECOVERY] Attempt %d/3: trying counter=%d (%s strategy) for blind 0x%06x", 
+                 this->counter_recovery_attempts_, new_counter, strategy_name, this->command_.blind_addr);
+        
+        // Update parent stats for per-blind sensors
+        if (this->parent_) {
+          this->parent_->update_per_blind_counter_stats(this->command_.blind_addr, new_counter, false, strategy_name);
+        }
         
         // Re-queue the failed command for retry
         this->commands_to_send_.push(this->last_command_sent_);
@@ -303,7 +335,7 @@ void EleroCover::check_silent_failure() {
         
       } else {
         // Give up after 3 attempts
-        ESP_LOGE(TAG, "COUNTER RECOVERY FAILED: giving up after 3 attempts for blind 0x%06x", 
+        ESP_LOGE(TAG, "[COUNTER_RECOVERY] FAILED: giving up after 3 attempts for blind 0x%06x", 
                  this->command_.blind_addr);
         
         // Notify parent about silent failure

@@ -4,6 +4,8 @@
 #include "esphome/core/preferences.h"
 #include "esphome/components/spi/spi.h"
 #include "esphome/components/elero/cc1101.h"
+#include <string>
+#include <map>
 
 // All encryption/decryption structures copied from https://github.com/QuadCorei8085/elero_protocol/ (MIT)
 // All remote handling based on code from https://github.com/stanleypa/eleropy (GPLv3)
@@ -106,6 +108,8 @@ class Elero : public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARIT
   void set_success_rate_sensor(EleroSensor *sensor) { success_rate_sensor_ = sensor; }
   void set_avg_response_time_sensor(EleroSensor *sensor) { avg_response_time_sensor_ = sensor; }
   void set_last_rssi_sensor(EleroSensor *sensor) { last_rssi_sensor_ = sensor; }
+  void set_blinds_in_recovery_sensor(EleroSensor *sensor) { blinds_in_recovery_sensor_ = sensor; }
+  void set_enable_per_blind_sensors(bool enable) { enable_per_blind_sensors_ = enable; }
   
   // Methods for covers to update metrics
   void increment_silent_failures() { 
@@ -117,6 +121,15 @@ class Elero : public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARIT
     response_count_++;
     update_debug_sensors();
   }
+  
+  // Counter recovery methods
+  void register_per_blind_sensors(uint32_t blind_address, const std::string& blind_name);
+  void update_per_blind_counter_stats(uint32_t blind_address, uint8_t counter, bool recovery_success, const std::string& strategy);
+  void update_per_blind_current_counter(uint32_t blind_address, uint8_t counter);
+  void update_per_blind_time_sensors();
+  void update_per_blind_last_response_time(uint32_t blind_address);
+  void update_blinds_in_recovery_count();
+  void register_per_blind_sensor(uint32_t blind_address, const std::string& sensor_type, EleroSensor* sensor);
   
   // Update debug sensors
   void update_debug_sensors();
@@ -161,6 +174,20 @@ class Elero : public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARIT
   EleroSensor *success_rate_sensor_{nullptr};
   EleroSensor *avg_response_time_sensor_{nullptr};
   EleroSensor *last_rssi_sensor_{nullptr};
+  EleroSensor *blinds_in_recovery_sensor_{nullptr};
+  bool enable_per_blind_sensors_{false};
+  
+  // Per-blind sensor tracking
+  struct PerBlindStats {
+    uint32_t recovery_attempts = 0;
+    uint32_t recovery_successes = 0;
+    uint8_t current_counter = 1;
+    uint8_t last_working_counter = 1;
+    std::string last_strategy_success = "none";
+    uint32_t last_response_time = 0;
+    std::map<std::string, EleroSensor*> sensors;
+  };
+  std::map<uint32_t, PerBlindStats> per_blind_stats_;
 };
 
 }  // namespace elero
