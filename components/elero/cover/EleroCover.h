@@ -2,6 +2,7 @@
 
 #include "esphome/core/component.h"
 #include "esphome/core/automation.h"
+#include "esphome/core/preferences.h"
 #include "esphome/components/cover/cover.h"
 #include "esphome/components/elero/elero.h"
 #include <queue>
@@ -92,6 +93,9 @@ class EleroCover : public cover::Cover, public Component {
   // Counter recovery
   uint8_t counter_recovery_attempts_{0};
   uint8_t original_counter_{0};
+
+  // NVS counter persistence
+  ESPPreferenceObject counter_pref_;
 
   uint32_t check_interval_ms_{60000}; // Default 1 minute
   uint32_t last_check_time_{0};

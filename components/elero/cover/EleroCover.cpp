@@ -22,6 +22,20 @@ void EleroCover::setup() {
     if((this->open_duration_ > 0) && (this->close_duration_ > 0))
       this->position = 0.5f;
   }
+
+  // Persist counter to NVS flash using a hash derived from the blind address
+  uint32_t hash = this->command_.blind_addr * 2654435761UL;  // Knuth multiplicative hash
+  this->counter_pref_ = global_preferences->make_preference<uint8_t>(hash);
+  uint8_t saved_counter = 0;
+  if (this->counter_pref_.load(&saved_counter) && saved_counter >= 1) {
+    this->command_.counter = saved_counter;
+    ESP_LOGI(TAG, "COUNTER RESTORE: Loaded counter=%d from NVS for blind 0x%06x",
+             saved_counter, this->command_.blind_addr);
+  } else {
+    ESP_LOGI(TAG, "COUNTER RESTORE: No saved counter for blind 0x%06x, starting at %d",
+             this->command_.blind_addr, this->command_.counter);
+    this->counter_pref_.save(&this->command_.counter);
+  }
 }
 
 void EleroCover::loop() {
@@ -192,11 +206,14 @@ void EleroCover::set_rx_state(uint8_t state) {
         this->parent_->update_per_blind_counter_stats(this->command_.blind_addr, this->command_.counter, true, strategy_name);
       }
       
+      // Persist recovered counter to NVS
+      this->counter_pref_.save(&this->command_.counter);
+
       // Now retry the original command with the working counter
-      ESP_LOGI(TAG, "[COUNTER_RECOVERY] Retrying original command with working counter %d for blind 0x%06x", 
+      ESP_LOGI(TAG, "[COUNTER_RECOVERY] Retrying original command with working counter %d for blind 0x%06x",
                this->command_.counter, this->command_.blind_addr);
       this->commands_to_send_.push(this->last_command_sent_);
-      
+
       this->counter_recovery_attempts_ = 0;
     }
     
@@ -432,6 +449,7 @@ void EleroCover::increase_counter() {
     this->command_.counter = 1;
   else
     this->command_.counter += 1;
+  this->counter_pref_.save(&this->command_.counter);
 }
 
 void EleroCover::control(const cover::CoverCall &call) {
