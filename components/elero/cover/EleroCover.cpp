@@ -267,21 +267,25 @@ void EleroCover::set_rx_state(uint8_t state) {
     case ELERO_STATE_BOTTOM_TILT: state_name = "BOTTOM_TILT"; break;
   }
   
+  float rssi = this->parent_->get_last_rssi();
+  uint8_t lqi = this->parent_->get_last_lqi();
+
   if (response_time > 0) {
     if (this->last_command_sent_ == ELERO_COMMAND_COVER_CHECK) {
       if (this->counter_recovery_attempts_ > 0) {
-        ESP_LOGD(TAG, "[RECOVERY_CHECK] Response: %s (0x%02x) from blind 0x%06x (response_time=%" PRIu32 "ms)", 
-                 state_name, state, this->command_.blind_addr, response_time);
+        ESP_LOGD(TAG, "[RECOVERY_CHECK] Response: %s (0x%02x) from blind 0x%06x (response_time=%" PRIu32 "ms, rssi=%.1f, lqi=%d)",
+                 state_name, state, this->command_.blind_addr, response_time, rssi, lqi);
       } else {
-        ESP_LOGD(TAG, "[PERIODIC_CHECK] Response: %s (0x%02x) from blind 0x%06x (response_time=%" PRIu32 "ms)", 
-                 state_name, state, this->command_.blind_addr, response_time);
+        ESP_LOGD(TAG, "[PERIODIC_CHECK] Response: %s (0x%02x) from blind 0x%06x (response_time=%" PRIu32 "ms, rssi=%.1f, lqi=%d)",
+                 state_name, state, this->command_.blind_addr, response_time, rssi, lqi);
       }
     } else {
-      ESP_LOGD(TAG, "STATE RX: %s (0x%02x) from blind 0x%06x (response_time=%" PRIu32 "ms)", 
-               state_name, state, this->command_.blind_addr, response_time);
+      ESP_LOGD(TAG, "STATE RX: %s (0x%02x) from blind 0x%06x (response_time=%" PRIu32 "ms, rssi=%.1f, lqi=%d)",
+               state_name, state, this->command_.blind_addr, response_time, rssi, lqi);
     }
   } else {
-    ESP_LOGD(TAG, "STATE RX: %s (0x%02x) from blind 0x%06x", state_name, state, this->command_.blind_addr);
+    ESP_LOGD(TAG, "STATE RX: %s (0x%02x) from blind 0x%06x (rssi=%.1f, lqi=%d)",
+             state_name, state, this->command_.blind_addr, rssi, lqi);
   }
   
   float pos = this->position;
@@ -360,6 +364,9 @@ void EleroCover::check_silent_failure() {
         case ELERO_COMMAND_COVER_INT: cmd_name = "INT"; break;
         case ELERO_COMMAND_COVER_CHECK: cmd_name = "CHECK"; break;
       }
+
+      ESP_LOGW(TAG, "SILENT FAILURE: No response to %s (counter=%d) for blind 0x%06x after %" PRIu32 "ms",
+               cmd_name, this->command_.counter, this->command_.blind_addr, elapsed);
       
       // Handle CHECK command failures differently
       if (this->last_command_sent_ == ELERO_COMMAND_COVER_CHECK) {
