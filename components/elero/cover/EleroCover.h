@@ -57,6 +57,10 @@ class EleroCover : public cover::Cover, public Component {
   void control(const cover::CoverCall &call) override;
   void increase_counter();
   void check_silent_failure();
+  uint8_t get_sweep_counter(uint8_t original, uint8_t attempt_index);
+
+  static constexpr uint8_t RECOVERY_SWEEP_RANGE = 5;
+  static constexpr uint8_t RECOVERY_MAX_ATTEMPTS = 10;
 
   t_elero_command command_ = {
     .counter = 1,

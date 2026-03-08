@@ -192,20 +192,21 @@ void EleroCover::set_rx_state(uint8_t state) {
     
     // Reset counter recovery on successful response
     if (this->counter_recovery_attempts_ > 0) {
-      const char* strategy_name = "unknown";
-      switch(this->counter_recovery_attempts_) {
-        case 1: strategy_name = "decrement"; break;
-        case 2: strategy_name = "increment"; break;
-      }
-      
-      ESP_LOGI(TAG, "[COUNTER_RECOVERY] SUCCESS: CHECK command succeeded with counter %d (%s strategy) for blind 0x%06x", 
+      int offset = (int)this->command_.counter - (int)this->original_counter_;
+      if (offset > 127) offset -= 255;
+      if (offset < -127) offset += 255;
+      char strategy_buf[16];
+      snprintf(strategy_buf, sizeof(strategy_buf), "%+d", offset);
+      const char* strategy_name = strategy_buf;
+
+      ESP_LOGI(TAG, "[COUNTER_RECOVERY] SUCCESS: CHECK command succeeded with counter %d (offset %s) for blind 0x%06x",
                this->command_.counter, strategy_name, this->command_.blind_addr);
       
       // Update parent stats for per-blind sensors
       if (this->parent_) {
-        this->parent_->update_per_blind_counter_stats(this->command_.blind_addr, this->command_.counter, true, strategy_name);
+        this->parent_->update_per_blind_counter_stats(this->command_.blind_addr, this->command_.counter, true, std::string(strategy_name));
       }
-      
+
       // Persist recovered counter to NVS
       this->counter_pref_.save(&this->command_.counter);
 
@@ -343,105 +344,106 @@ void EleroCover::check_silent_failure() {
       if (this->last_command_sent_ == ELERO_COMMAND_COVER_CHECK) {
         if (this->counter_recovery_attempts_ > 0) {
           // This was a recovery CHECK that failed
-          ESP_LOGW(TAG, "[RECOVERY_CHECK] FAILED: CHECK command with counter=%d failed for blind 0x%06x (attempt %d/2)", 
-                   this->command_.counter, this->command_.blind_addr, this->counter_recovery_attempts_);
-          
+          ESP_LOGW(TAG, "[RECOVERY_CHECK] FAILED: CHECK command with counter=%d failed for blind 0x%06x (attempt %d/%d)",
+                   this->command_.counter, this->command_.blind_addr, this->counter_recovery_attempts_, RECOVERY_MAX_ATTEMPTS);
+
           // Continue with next recovery attempt or give up
-          if (this->counter_recovery_attempts_ < 2) {
-            // Try next recovery strategy
-            uint8_t test_counter = this->original_counter_;
-            const char* strategy_name = "increment";
-            test_counter = (this->original_counter_ < 255) ? this->original_counter_ + 1 : 1;
-            
+          if (this->counter_recovery_attempts_ < RECOVERY_MAX_ATTEMPTS) {
+            uint8_t test_counter = this->get_sweep_counter(this->original_counter_, this->counter_recovery_attempts_);
             this->command_.counter = test_counter;
             this->counter_recovery_attempts_++;
-            
-            ESP_LOGI(TAG, "[COUNTER_RECOVERY] Attempt %d/2: trying CHECK with counter=%d (%s strategy) for blind 0x%06x", 
-                     this->counter_recovery_attempts_, test_counter, strategy_name, this->command_.blind_addr);
-            
-            // Update parent stats for per-blind sensors
+
+            int offset = (int)test_counter - (int)this->original_counter_;
+            if (offset > 127) offset -= 255;
+            if (offset < -127) offset += 255;
+
+            ESP_LOGI(TAG, "[COUNTER_RECOVERY] Attempt %d/%d: trying CHECK with counter=%d (offset %+d) for blind 0x%06x",
+                     this->counter_recovery_attempts_, RECOVERY_MAX_ATTEMPTS, test_counter, offset, this->command_.blind_addr);
+
             if (this->parent_) {
-              this->parent_->update_per_blind_counter_stats(this->command_.blind_addr, test_counter, false, strategy_name);
+              char buf[16];
+              snprintf(buf, sizeof(buf), "%+d", offset);
+              this->parent_->update_per_blind_counter_stats(this->command_.blind_addr, test_counter, false, std::string(buf));
             }
-            
-            // Send CHECK command to test this counter
+
             this->commands_to_send_.push(ELERO_COMMAND_COVER_CHECK);
             this->waiting_for_response_ = false;
           } else {
-            // Give up after 2 CHECK attempts
-            ESP_LOGE(TAG, "[COUNTER_RECOVERY] FAILED: giving up after 2 CHECK attempts for blind 0x%06x, will wait for next periodic CHECK", 
-                     this->command_.blind_addr);
-            
-            // Notify parent about silent failure
+            ESP_LOGE(TAG, "[COUNTER_RECOVERY] FAILED: giving up after %d attempts for blind 0x%06x (tried offsets -1..+%d from counter %d)",
+                     RECOVERY_MAX_ATTEMPTS, this->command_.blind_addr, RECOVERY_SWEEP_RANGE, this->original_counter_);
+
             if (this->parent_) {
               this->parent_->increment_silent_failures();
             }
-            
+
             this->waiting_for_response_ = false;
             this->counter_recovery_attempts_ = 0;
           }
         } else {
           // This was a periodic CHECK that failed
-          ESP_LOGW(TAG, "[PERIODIC_CHECK] FAILED: CHECK command failed for blind 0x%06x (no response after %dms)", 
+          ESP_LOGW(TAG, "[PERIODIC_CHECK] FAILED: CHECK command failed for blind 0x%06x (no response after %" PRIu32 "ms)",
                    this->command_.blind_addr, elapsed);
           this->waiting_for_response_ = false;
         }
         return; // Don't continue with normal recovery logic for CHECK commands
       }
-      
+
       // Start CHECK-based counter recovery for action commands
       if (this->counter_recovery_attempts_ == 0) {
         this->original_counter_ = this->command_.counter;
-        ESP_LOGI(TAG, "[COUNTER_RECOVERY] Starting CHECK-based recovery for blind 0x%06x - %s command failed, original_counter=%d", 
+        ESP_LOGI(TAG, "[COUNTER_RECOVERY] Starting CHECK-based recovery for blind 0x%06x - %s command failed, original_counter=%d",
                  this->command_.blind_addr, cmd_name, this->original_counter_);
       }
-      
-      // Try CHECK commands with different counter values
-      if (this->counter_recovery_attempts_ < 2) {
-        uint8_t test_counter = this->original_counter_;
-        const char* strategy_name = "unknown";
-        
-        switch(this->counter_recovery_attempts_) {
-          case 0: // Try decrementing by 1 (maybe we got ahead)
-            test_counter = (this->original_counter_ > 1) ? this->original_counter_ - 1 : 255;
-            strategy_name = "decrement";
-            break;
-          case 1: // Try incrementing by 1 (maybe we missed a command)
-            test_counter = (this->original_counter_ < 255) ? this->original_counter_ + 1 : 1;
-            strategy_name = "increment";
-            break;
-        }
-        
+
+      // Try CHECK commands with different counter values using sweep pattern
+      if (this->counter_recovery_attempts_ < RECOVERY_MAX_ATTEMPTS) {
+        uint8_t test_counter = this->get_sweep_counter(this->original_counter_, this->counter_recovery_attempts_);
         this->command_.counter = test_counter;
         this->counter_recovery_attempts_++;
-        
-        ESP_LOGI(TAG, "[COUNTER_RECOVERY] Attempt %d/2: trying CHECK with counter=%d (%s strategy) for blind 0x%06x", 
-                 this->counter_recovery_attempts_, test_counter, strategy_name, this->command_.blind_addr);
-        
-        // Update parent stats for per-blind sensors
+
+        int offset = (int)test_counter - (int)this->original_counter_;
+        if (offset > 127) offset -= 255;
+        if (offset < -127) offset += 255;
+
+        ESP_LOGI(TAG, "[COUNTER_RECOVERY] Attempt %d/%d: trying CHECK with counter=%d (offset %+d) for blind 0x%06x",
+                 this->counter_recovery_attempts_, RECOVERY_MAX_ATTEMPTS, test_counter, offset, this->command_.blind_addr);
+
         if (this->parent_) {
-          this->parent_->update_per_blind_counter_stats(this->command_.blind_addr, test_counter, false, strategy_name);
+          char buf[16];
+          snprintf(buf, sizeof(buf), "%+d", offset);
+          this->parent_->update_per_blind_counter_stats(this->command_.blind_addr, test_counter, false, std::string(buf));
         }
-        
-        // Send CHECK command to test this counter
+
         this->commands_to_send_.push(ELERO_COMMAND_COVER_CHECK);
         this->waiting_for_response_ = false;
-        
+
       } else {
-        // Give up after 2 CHECK attempts
-        ESP_LOGE(TAG, "[COUNTER_RECOVERY] FAILED: giving up after 2 CHECK attempts for blind 0x%06x, will wait for next periodic CHECK", 
-                 this->command_.blind_addr);
-        
-        // Notify parent about silent failure
+        ESP_LOGE(TAG, "[COUNTER_RECOVERY] FAILED: giving up after %d attempts for blind 0x%06x (tried offsets -1..+%d from counter %d)",
+                 RECOVERY_MAX_ATTEMPTS, this->command_.blind_addr, RECOVERY_SWEEP_RANGE, this->original_counter_);
+
         if (this->parent_) {
           this->parent_->increment_silent_failures();
         }
-        
+
         this->waiting_for_response_ = false;
         this->counter_recovery_attempts_ = 0;
       }
     }
   }
+}
+
+uint8_t EleroCover::get_sweep_counter(uint8_t original, uint8_t attempt_index) {
+  // Sweep order: -1, +1, -2, +2, -3, +3, -4, +4, -5, +5
+  int offset = (attempt_index / 2) + 1;
+  if (attempt_index % 2 == 0)
+    offset = -offset;  // even indices: negative offsets
+  int result = (int)original + offset;
+  // Wrap within valid range 1-255 (counter 0 is invalid)
+  if (result < 1)
+    result += 255;
+  else if (result > 255)
+    result -= 255;
+  return (uint8_t)result;
 }
 
 void EleroCover::increase_counter() {
