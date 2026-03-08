@@ -101,6 +101,12 @@ class EleroCover : public cover::Cover, public Component {
   // NVS counter persistence
   ESPPreferenceObject counter_pref_;
 
+  // Post-command confirmation CHECK
+  bool pending_confirmation_check_{false};
+  uint32_t confirmation_check_time_{0};
+  uint8_t confirmation_command_sent_{0};
+  static constexpr uint32_t CONFIRMATION_DELAY_MS = 3000;
+
   uint32_t check_interval_ms_{60000}; // Default 1 minute
   uint32_t last_check_time_{0};
 };

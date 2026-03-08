@@ -90,6 +90,15 @@ bool EleroCover::is_at_target() {
 }
 
 void EleroCover::handle_commands(uint32_t now) {
+  // Post-command confirmation CHECK: send a CHECK ~3s after a movement command completes
+  if (this->pending_confirmation_check_ && this->commands_to_send_.empty() &&
+      !this->waiting_for_response_ && now >= this->confirmation_check_time_) {
+    ESP_LOGD(TAG, "CONFIRM CHECK: Sending confirmation CHECK for blind 0x%06x after command 0x%02x",
+             this->command_.blind_addr, this->confirmation_command_sent_);
+    this->commands_to_send_.push(ELERO_COMMAND_COVER_CHECK);
+    this->pending_confirmation_check_ = false;
+  }
+
   // Periodic CHECK command to keep counter in sync and update status
   if (check_interval_ms_ > 0 && (now - last_check_time_) > check_interval_ms_) {
     // Only send CHECK if we're not currently processing commands
@@ -150,6 +159,13 @@ void EleroCover::handle_commands(uint32_t now) {
           if (this->parent_) {
             this->parent_->update_per_blind_current_counter(this->command_.blind_addr, this->command_.counter);
           }
+
+          // Schedule a confirmation CHECK after non-CHECK commands
+          if (command_byte != ELERO_COMMAND_COVER_CHECK) {
+            this->pending_confirmation_check_ = true;
+            this->confirmation_check_time_ = millis() + CONFIRMATION_DELAY_MS;
+            this->confirmation_command_sent_ = command_byte;
+          }
         }
       } else {
         ESP_LOGW(TAG, "CMD RETRY: %s command failed (retry #%d for blind 0x%06x)", 
@@ -184,6 +200,9 @@ cover::CoverTraits EleroCover::get_traits() {
 }
 
 void EleroCover::set_rx_state(uint8_t state) {
+  // Cancel pending confirmation CHECK — we got a response
+  this->pending_confirmation_check_ = false;
+
   // Track response time for debug sensors
   uint32_t response_time = 0;
   if (this->waiting_for_response_) {
@@ -329,7 +348,9 @@ void EleroCover::check_silent_failure() {
   if (this->waiting_for_response_) {
     uint32_t elapsed = millis() - this->last_command_sent_time_;
     if (elapsed > RESPONSE_TIMEOUT_MS) {
-      // Silent failure detected!
+      // Silent failure detected — cancel any pending confirmation CHECK
+      this->pending_confirmation_check_ = false;
+
       const char* cmd_name = "UNKNOWN";
       switch(this->last_command_sent_) {
         case ELERO_COMMAND_COVER_STOP: cmd_name = "STOP"; break;
