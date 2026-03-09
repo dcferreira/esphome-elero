@@ -45,7 +45,7 @@ CONFIG_SCHEMA = (
             cv.Required(CONF_BLIND_ADDRESS): cv.hex_int_range(min=0x0, max=0xFFFFFF),
             cv.Required(CONF_CHANNEL): cv.int_range(min=0, max=255),
             cv.Required(CONF_REMOTE_ADDRESS): cv.hex_int_range(min=0x0, max=0xFFFFFF),
-            cv.Optional(CONF_POLL_INTERVAL, default="5min"): poll_interval,
+            cv.Optional(CONF_POLL_INTERVAL, default="never"): poll_interval,
             cv.Optional(
                 CONF_OPEN_DURATION, default="0s"
             ): cv.positive_time_period_milliseconds,
@@ -82,7 +82,7 @@ CONFIG_SCHEMA = (
             ),
             cv.Optional(CONF_SUPPORTS_TILT, default=False): cv.boolean,
             cv.Optional(
-                CONF_CHECK_INTERVAL, default="1min"
+                CONF_CHECK_INTERVAL, default="0s"
             ): cv.positive_time_period_milliseconds,
         }
     )

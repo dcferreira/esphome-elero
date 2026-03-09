@@ -111,6 +111,14 @@ class EleroCover : public cover::Cover, public Component {
 
   uint32_t check_interval_ms_{0}; // Disabled by default; counter sync from overheard remotes is preferred
   uint32_t last_check_time_{0};
+
+  // Counter conservation: suppress polls/CHECKs when desynced
+  uint32_t last_successful_rx_{0};  // Last time we got ANY response from this blind
+  static constexpr uint32_t DESYNC_THRESHOLD_MS = 30000;  // Consider desynced after 30s no response
+
+  // Remote activity cooldown: don't send commands while the physical remote is active
+  uint32_t last_remote_activity_{0};  // Last time we overheard the physical remote
+  static constexpr uint32_t REMOTE_COOLDOWN_MS = 5000;  // Wait 5s after last remote packet
 };
 
 } // namespace elero

@@ -46,7 +46,10 @@ void EleroCover::loop() {
       intvl = ELERO_POLL_INTERVAL_MOVING;
   }
 
-  if((now > this->poll_offset_) && (now - this->poll_offset_ - this->last_poll_) > intvl) {
+  bool desynced = (this->last_successful_rx_ > 0) &&
+                  (now - this->last_successful_rx_) > DESYNC_THRESHOLD_MS;
+
+  if(!desynced && (now > this->poll_offset_) && (now - this->poll_offset_ - this->last_poll_) > intvl) {
     this->commands_to_send_.push(this->command_check_);
     this->last_poll_ = now - this->poll_offset_;
   }
@@ -99,18 +102,30 @@ void EleroCover::handle_commands(uint32_t now) {
     this->pending_confirmation_check_ = false;
   }
 
+  // Remote activity cooldown: don't send any commands while the physical remote is active
+  if (this->last_remote_activity_ > 0 &&
+      (now - this->last_remote_activity_) < REMOTE_COOLDOWN_MS &&
+      this->commands_to_send_.size() > 0) {
+    ESP_LOGD(TAG, "REMOTE COOLDOWN: Deferring commands for blind 0x%06x (%" PRIu32 "ms since last remote activity)",
+             this->command_.blind_addr, now - this->last_remote_activity_);
+    return;
+  }
+
   // Periodic CHECK command to keep counter in sync and update status
-  if (check_interval_ms_ > 0 && (now - last_check_time_) > check_interval_ms_) {
+  // Suppress when desynced (no response for >30s) to conserve counter values
+  bool is_desynced = (this->last_successful_rx_ > 0) &&
+                     (now - this->last_successful_rx_) > DESYNC_THRESHOLD_MS;
+  if (!is_desynced && check_interval_ms_ > 0 && (now - last_check_time_) > check_interval_ms_) {
     // Only send CHECK if we're not currently processing commands
     if (this->commands_to_send_.empty() && !this->waiting_for_response_) {
-      ESP_LOGD(TAG, "PERIODIC CHECK: Sending CHECK command to blind 0x%06x (interval=%dms)", 
+      ESP_LOGD(TAG, "PERIODIC CHECK: Sending CHECK command to blind 0x%06x (interval=%dms)",
                this->command_.blind_addr, check_interval_ms_);
       this->commands_to_send_.push(ELERO_COMMAND_COVER_CHECK);
       last_check_time_ = now;
     } else {
       // Defer CHECK if busy, but don't let it drift too far
       if ((now - last_check_time_) > (check_interval_ms_ * 2)) {
-        ESP_LOGD(TAG, "PERIODIC CHECK: Forcing CHECK despite busy state for blind 0x%06x", 
+        ESP_LOGD(TAG, "PERIODIC CHECK: Forcing CHECK despite busy state for blind 0x%06x",
                  this->command_.blind_addr);
         this->commands_to_send_.push(ELERO_COMMAND_COVER_CHECK);
         last_check_time_ = now;
@@ -202,6 +217,9 @@ cover::CoverTraits EleroCover::get_traits() {
 void EleroCover::set_rx_state(uint8_t state) {
   // Cancel pending confirmation CHECK — we got a response
   this->pending_confirmation_check_ = false;
+
+  // Track successful response for desync detection
+  this->last_successful_rx_ = millis();
 
   // Track response time for debug sensors
   uint32_t response_time = 0;
@@ -481,8 +499,10 @@ void EleroCover::check_silent_failure() {
 }
 
 uint8_t EleroCover::get_sweep_counter(uint8_t original, uint8_t attempt_index) {
-  // Forward-only sweep in steps of 5: +5, +10, +15, ..., +50
-  int offset = ((int)attempt_index + 1) * 5;
+  // First 5 attempts: small steps +1..+5 (for near-miss after sync)
+  // Next 5 attempts: larger steps +10, +15, +20, +30, +40 (for large desync)
+  static const int offsets[] = {1, 2, 3, 4, 5, 10, 15, 20, 30, 40};
+  int offset = offsets[attempt_index < 10 ? attempt_index : 9];
   int result = (int)original + offset;
   // Wrap within valid range 1-255 (counter 0 is invalid)
   if (result > 255)
@@ -647,14 +667,33 @@ void EleroCover::sync_external_command(cover::CoverOperation op) {
 }
 
 void EleroCover::sync_counter(uint8_t remote_cnt) {
-  // Advance our counter to one past the overheard remote counter
-  uint8_t new_counter = (remote_cnt == 0xFF) ? 1 : remote_cnt + 1;
+  // Advance our counter past the overheard remote counter.
+  // Use +2 offset to account for remote packets the ESP may have missed
+  // (the remote sends multiple packets per button press, we may not overhear all of them).
+  uint8_t new_counter = (remote_cnt >= 0xFE) ? (remote_cnt + 2 - 255) : remote_cnt + 2;
 
   ESP_LOGI(TAG, "COUNTER SYNC: Overheard remote counter=%d for blind 0x%06x, updating ESP counter %d -> %d",
            remote_cnt, this->command_.blind_addr, this->command_.counter, new_counter);
 
   this->command_.counter = new_counter;
   this->counter_pref_.save(&this->command_.counter);
+
+  // Cancel any in-progress recovery (the sync gives us a fresh counter)
+  if (this->counter_recovery_attempts_ > 0) {
+    ESP_LOGI(TAG, "COUNTER SYNC: Cancelling recovery sweep for blind 0x%06x (sync provides correct counter)",
+             this->command_.blind_addr);
+    this->counter_recovery_attempts_ = 0;
+  }
+
+  // Clear any queued commands that would use the old counter
+  while (!this->commands_to_send_.empty()) {
+    this->commands_to_send_.pop();
+  }
+  this->waiting_for_response_ = false;
+  this->pending_confirmation_check_ = false;
+
+  // Record remote activity (triggers cooldown — don't race with the remote)
+  this->last_remote_activity_ = millis();
 
   // Update parent stats
   if (this->parent_) {
