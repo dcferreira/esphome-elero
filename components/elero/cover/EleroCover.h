@@ -40,6 +40,7 @@ class EleroCover : public cover::Cover, public Component {
   void set_supports_tilt(bool tilt) { this->supports_tilt_ = tilt; }
   void set_check_interval(uint32_t check_interval_ms) { this->check_interval_ms_ = check_interval_ms; }
   uint32_t get_blind_address() { return this->command_.blind_addr; }
+  uint32_t get_remote_address() const { return this->command_.remote_addr; }
   void set_rx_state(uint8_t state);
   void handle_commands(uint32_t now);
   void recompute_position();
@@ -52,14 +53,15 @@ class EleroCover : public cover::Cover, public Component {
   uint8_t get_command_down() const { return command_down_; }
   uint8_t get_command_stop() const { return command_stop_; }
   void sync_external_command(cover::CoverOperation op);
-  
+  void sync_counter(uint8_t remote_cnt);
+
  protected:
   void control(const cover::CoverCall &call) override;
   void increase_counter();
   void check_silent_failure();
   uint8_t get_sweep_counter(uint8_t original, uint8_t attempt_index);
 
-  static constexpr uint8_t RECOVERY_SWEEP_RANGE = 5;
+  static constexpr uint8_t RECOVERY_SWEEP_RANGE = 50;
   static constexpr uint8_t RECOVERY_MAX_ATTEMPTS = 10;
 
   t_elero_command command_ = {
@@ -107,7 +109,7 @@ class EleroCover : public cover::Cover, public Component {
   uint8_t confirmation_command_sent_{0};
   static constexpr uint32_t CONFIRMATION_DELAY_MS = 3000;
 
-  uint32_t check_interval_ms_{60000}; // Default 1 minute
+  uint32_t check_interval_ms_{0}; // Disabled by default; counter sync from overheard remotes is preferred
   uint32_t last_check_time_{0};
 };
 

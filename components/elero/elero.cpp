@@ -514,9 +514,14 @@ void Elero::interpret_msg() {
         case ELERO_COMMAND_COVER_CHECK: cmd_name = "CHECK"; break;
       }
       
-      ESP_LOGD(TAG, "OVERHEARD CMD: %s (0x%02x) from remote 0x%06x to blind 0x%06x", 
-               cmd_name, command_byte, src, dst);
-      
+      ESP_LOGD(TAG, "OVERHEARD CMD: %s (0x%02x) from remote 0x%06x to blind 0x%06x (cnt=%d)",
+               cmd_name, command_byte, src, dst, cnt);
+
+      // Sync rolling counter if the command came from the same remote identity we impersonate
+      if (src == cover->get_remote_address()) {
+        cover->sync_counter(cnt);
+      }
+
       // Update cover operation based on overheard command
       // This helps keep ESPHome in sync when physical remote is used
       if(command_byte == cover->get_command_up()) {

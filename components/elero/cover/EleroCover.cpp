@@ -397,7 +397,7 @@ void EleroCover::check_silent_failure() {
             this->commands_to_send_.push(ELERO_COMMAND_COVER_CHECK);
             this->waiting_for_response_ = false;
           } else {
-            ESP_LOGE(TAG, "[COUNTER_RECOVERY] FAILED: giving up after %d attempts for blind 0x%06x (tried offsets -1..+%d from counter %d)",
+            ESP_LOGE(TAG, "[COUNTER_RECOVERY] FAILED: giving up after %d attempts for blind 0x%06x (tried +5..+%d from counter %d)",
                      RECOVERY_MAX_ATTEMPTS, this->command_.blind_addr, RECOVERY_SWEEP_RANGE, this->original_counter_);
 
             if (this->parent_) {
@@ -408,10 +408,30 @@ void EleroCover::check_silent_failure() {
             this->counter_recovery_attempts_ = 0;
           }
         } else {
-          // This was a periodic CHECK that failed
-          ESP_LOGW(TAG, "[PERIODIC_CHECK] FAILED: CHECK command failed for blind 0x%06x (no response after %" PRIu32 "ms)",
+          // This was a periodic CHECK that failed — start counter recovery
+          ESP_LOGW(TAG, "[PERIODIC_CHECK] FAILED: CHECK command failed for blind 0x%06x (no response after %" PRIu32 "ms) — starting counter recovery",
                    this->command_.blind_addr, elapsed);
           this->waiting_for_response_ = false;
+          this->original_counter_ = this->command_.counter;
+          this->counter_recovery_attempts_ = 1;
+
+          uint8_t test_counter = this->get_sweep_counter(this->original_counter_, 0);
+          this->command_.counter = test_counter;
+
+          int offset = (int)test_counter - (int)this->original_counter_;
+          if (offset > 127) offset -= 255;
+          if (offset < -127) offset += 255;
+
+          ESP_LOGI(TAG, "[COUNTER_RECOVERY] Attempt 1/%d: trying CHECK with counter=%d (offset %+d) for blind 0x%06x",
+                   RECOVERY_MAX_ATTEMPTS, test_counter, offset, this->command_.blind_addr);
+
+          if (this->parent_) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%+d", offset);
+            this->parent_->update_per_blind_counter_stats(this->command_.blind_addr, test_counter, false, std::string(buf));
+          }
+
+          this->commands_to_send_.push(ELERO_COMMAND_COVER_CHECK);
         }
         return; // Don't continue with normal recovery logic for CHECK commands
       }
@@ -446,7 +466,7 @@ void EleroCover::check_silent_failure() {
         this->waiting_for_response_ = false;
 
       } else {
-        ESP_LOGE(TAG, "[COUNTER_RECOVERY] FAILED: giving up after %d attempts for blind 0x%06x (tried offsets -1..+%d from counter %d)",
+        ESP_LOGE(TAG, "[COUNTER_RECOVERY] FAILED: giving up after %d attempts for blind 0x%06x (tried +5..+%d from counter %d)",
                  RECOVERY_MAX_ATTEMPTS, this->command_.blind_addr, RECOVERY_SWEEP_RANGE, this->original_counter_);
 
         if (this->parent_) {
@@ -461,15 +481,11 @@ void EleroCover::check_silent_failure() {
 }
 
 uint8_t EleroCover::get_sweep_counter(uint8_t original, uint8_t attempt_index) {
-  // Sweep order: -1, +1, -2, +2, -3, +3, -4, +4, -5, +5
-  int offset = (attempt_index / 2) + 1;
-  if (attempt_index % 2 == 0)
-    offset = -offset;  // even indices: negative offsets
+  // Forward-only sweep in steps of 5: +5, +10, +15, ..., +50
+  int offset = ((int)attempt_index + 1) * 5;
   int result = (int)original + offset;
   // Wrap within valid range 1-255 (counter 0 is invalid)
-  if (result < 1)
-    result += 255;
-  else if (result > 255)
+  if (result > 255)
     result -= 255;
   return (uint8_t)result;
 }
@@ -628,6 +644,22 @@ void EleroCover::sync_external_command(cover::CoverOperation op) {
   
   // Publish the updated state
   this->publish_state();
+}
+
+void EleroCover::sync_counter(uint8_t remote_cnt) {
+  // Advance our counter to one past the overheard remote counter
+  uint8_t new_counter = (remote_cnt == 0xFF) ? 1 : remote_cnt + 1;
+
+  ESP_LOGI(TAG, "COUNTER SYNC: Overheard remote counter=%d for blind 0x%06x, updating ESP counter %d -> %d",
+           remote_cnt, this->command_.blind_addr, this->command_.counter, new_counter);
+
+  this->command_.counter = new_counter;
+  this->counter_pref_.save(&this->command_.counter);
+
+  // Update parent stats
+  if (this->parent_) {
+    this->parent_->update_per_blind_current_counter(this->command_.blind_addr, new_counter);
+  }
 }
 
 } // namespace elero
