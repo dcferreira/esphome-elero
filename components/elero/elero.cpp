@@ -501,7 +501,7 @@ void Elero::interpret_msg() {
       
       // Check if the command comes from the configured remote for this blind
       // We need to get the remote address from the cover to verify
-      uint8_t command_byte = payload[4];
+      uint8_t command_byte = payload[2];
       
       // Decode command for logging
       const char* cmd_name = "UNKNOWN";
@@ -513,9 +513,9 @@ void Elero::interpret_msg() {
         case ELERO_COMMAND_COVER_INT: cmd_name = "INT"; break;
         case ELERO_COMMAND_COVER_CHECK: cmd_name = "CHECK"; break;
       }
-      
-      ESP_LOGD(TAG, "OVERHEARD CMD: %s (0x%02x) from remote 0x%06x to blind 0x%06x (cnt=%d)",
-               cmd_name, command_byte, src, dst, cnt);
+
+      ESP_LOGD(TAG, "OVERHEARD CMD: %s (0x%02x) from remote 0x%06x to blind 0x%06x (cnt=%d, hop=0x%02x, rssi=%.1f, lqi=%d, payload=[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x])",
+               cmd_name, command_byte, src, dst, cnt, hop, rssi, lqi, payload1, payload2, payload[0], payload[1], payload[2], payload[3], payload[4], payload[5], payload[6], payload[7]);
 
       // Sync rolling counter if the command came from the same remote identity we impersonate
       if (src == cover->get_remote_address()) {
