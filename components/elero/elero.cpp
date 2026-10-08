@@ -17,20 +17,36 @@ void Elero::loop() {
     ESP_LOGVV(TAG, "loop says \"received\"");
     this->received_ = false;
     uint8_t len = this->read_status(CC1101_RXBYTES);
-    if(len & 0x7F) { // bytes available
-      if((len & 0x7F) > CC1101_FIFO_LENGTH) {
-        ESP_LOGV(TAG, "Received more bytes than FIFO length - wtf?");
-        this->read_buf(CC1101_RXFIFO, this->msg_rx_, CC1101_FIFO_LENGTH);
-      } else {
-        this->read_buf(CC1101_RXFIFO, this->msg_rx_, (len & 0x7f));
+    uint8_t avail = len & 0x7F;
+    if(avail) { // bytes available
+      if(avail > CC1101_FIFO_LENGTH) {
+        ESP_LOGW(TAG, "RX DROP: %d bytes in FIFO exceeds FIFO length, truncating", avail);
+        avail = CC1101_FIFO_LENGTH;
       }
-      // Sanity check
-      if(this->msg_rx_[0] + 3 <= (len & 0x7f)) {
+      uint8_t fifo[CC1101_FIFO_LENGTH];
+      this->read_buf(CC1101_RXFIFO, fifo, avail);
+      // The FIFO can hold more than one packet if the loop was slow to service
+      // the interrupt; decode every complete packet instead of only the first.
+      uint8_t off = 0;
+      uint8_t packets = 0;
+      while(off < avail) {
+        uint8_t pkt_len = fifo[off] + 3; // length byte + payload + RSSI + LQI/CRC
+        if(fifo[off] == 0 || off + pkt_len > avail) {
+          ESP_LOGW(TAG, "RX DROP: incomplete packet in FIFO (declared len=%d, %d bytes left of %d)",
+                   fifo[off], avail - off, avail);
+          break;
+        }
+        memcpy(this->msg_rx_, &fifo[off], pkt_len);
         this->interpret_msg();
+        off += pkt_len;
+        packets++;
+      }
+      if(packets > 1) {
+        ESP_LOGW(TAG, "RX: decoded %d packets from one FIFO read (previously only the first was kept)", packets);
       }
     }
     if(len & 0x80) { // overflow
-      ESP_LOGV(TAG, "Rx overflow, flushing FIFOs");
+      ESP_LOGW(TAG, "RX DROP: FIFO overflow, flushing FIFOs (packets lost)");
       this->flush_and_rx();
     }
   }
@@ -113,7 +129,9 @@ void Elero::init() {
   this->write_reg(CC1101_TEST1, 0x35);
   this->write_reg(CC1101_TEST0, 0x09);
   this->write_reg(CC1101_IOCFG0, 0x06);
-  this->write_reg(CC1101_PKTCTRL1, 0x8C);  
+  // 0x84: PQT=4, append status, CRC_AUTOFLUSH *off* so packets failing CRC
+  // reach software and can be logged (previously 0x8C dropped them silently).
+  this->write_reg(CC1101_PKTCTRL1, 0x84);
   this->write_reg(CC1101_PKTCTRL0, 0x45);
   this->write_reg(CC1101_ADDR, 0x00);
   this->write_reg(CC1101_PKTLEN, 0x3C);
@@ -474,6 +492,13 @@ void Elero::interpret_msg() {
     rssi = (float)((this->msg_rx_[length+1]-256)/2-74);
   else
     rssi = (float)((this->msg_rx_[length+1])/2-74);
+  if(!crc) {
+    // Header bytes are not encrypted, so they are usually still informative
+    ESP_LOGW(TAG, "RX CRC FAIL: len=%02d, cnt=%02d, typ=0x%02x, chl=%02d, src=0x%06x, dst=0x%06x, rssi=%2.1f, lqi=%2d",
+             length, cnt, typ, chl, src, dst, rssi, lqi);
+    return;
+  }
+
   uint8_t *payload = &this->msg_rx_[19 + dests_len];
   msg_decode(payload);
   

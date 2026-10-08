@@ -46,10 +46,17 @@ void EleroCover::loop() {
       intvl = ELERO_POLL_INTERVAL_MOVING;
   }
 
-  bool desynced = (this->last_successful_rx_ > 0) &&
+  // While moving, always poll: the replies are how we learn a command arrived
+  // even when its own acknowledgement was lost.
+  bool desynced = (this->current_operation == COVER_OPERATION_IDLE) &&
+                  (this->last_successful_rx_ > 0) &&
                   (now - this->last_successful_rx_) > DESYNC_THRESHOLD_MS;
 
-  if(!desynced && (now > this->poll_offset_) && (now - this->poll_offset_ - this->last_poll_) > intvl) {
+  // Don't let a poll CHECK displace an action command still awaiting its ack
+  bool awaiting_action_ack = this->waiting_for_response_ &&
+                             (this->last_command_sent_ != ELERO_COMMAND_COVER_CHECK);
+
+  if(!desynced && !awaiting_action_ack && (now > this->poll_offset_) && (now - this->poll_offset_ - this->last_poll_) > intvl) {
     this->commands_to_send_.push(this->command_check_);
     this->last_poll_ = now - this->poll_offset_;
   }
@@ -226,7 +233,8 @@ void EleroCover::set_rx_state(uint8_t state) {
   if (this->waiting_for_response_) {
     response_time = millis() - this->last_command_sent_time_;
     this->waiting_for_response_ = false;
-    
+    this->ack_resends_ = 0;
+
     // Reset counter recovery on successful response
     if (this->counter_recovery_attempts_ > 0) {
       int offset = (int)this->command_.counter - (int)this->original_counter_;
@@ -247,12 +255,17 @@ void EleroCover::set_rx_state(uint8_t state) {
       // Persist recovered counter to NVS
       this->counter_pref_.save(&this->command_.counter);
 
-      // Now retry the original command with the working counter
-      ESP_LOGI(TAG, "[COUNTER_RECOVERY] Retrying original command with working counter %d for blind 0x%06x",
-               this->command_.counter, this->command_.blind_addr);
-      this->commands_to_send_.push(this->last_command_sent_);
+      // Now retry the original action command with the working counter.
+      // last_command_sent_ is the recovery CHECK at this point, so use the
+      // command saved when recovery started.
+      if (this->recovery_command_ != 0) {
+        ESP_LOGI(TAG, "[COUNTER_RECOVERY] Retrying original command 0x%02x with working counter %d for blind 0x%06x",
+                 this->recovery_command_, this->command_.counter, this->command_.blind_addr);
+        this->commands_to_send_.push(this->recovery_command_);
+      }
 
       this->counter_recovery_attempts_ = 0;
+      this->recovery_command_ = 0;
     }
     
     // Notify parent about response time
@@ -369,6 +382,20 @@ void EleroCover::set_rx_state(uint8_t state) {
 void EleroCover::check_silent_failure() {
   if (this->waiting_for_response_) {
     uint32_t elapsed = millis() - this->last_command_sent_time_;
+
+    // Action command not acknowledged quickly: resend it (with a fresh counter)
+    // before assuming a counter problem. Either the command or its reply was
+    // lost on the air; repeating an UP/DOWN/STOP is harmless to the blind.
+    if (elapsed > ACK_TIMEOUT_MS && this->last_command_sent_ != ELERO_COMMAND_COVER_CHECK &&
+        this->counter_recovery_attempts_ == 0 && this->ack_resends_ < ACK_MAX_RESENDS) {
+      this->ack_resends_++;
+      ESP_LOGW(TAG, "NO ACK: resending command 0x%02x to blind 0x%06x (resend %d/%d, no reply after %" PRIu32 "ms)",
+               this->last_command_sent_, this->command_.blind_addr, this->ack_resends_, ACK_MAX_RESENDS, elapsed);
+      this->commands_to_send_.push(this->last_command_sent_);
+      this->waiting_for_response_ = false;
+      return;
+    }
+
     if (elapsed > RESPONSE_TIMEOUT_MS) {
       // Silent failure detected — cancel any pending confirmation CHECK
       this->pending_confirmation_check_ = false;
@@ -457,6 +484,8 @@ void EleroCover::check_silent_failure() {
       // Start CHECK-based counter recovery for action commands
       if (this->counter_recovery_attempts_ == 0) {
         this->original_counter_ = this->command_.counter;
+        this->recovery_command_ = this->last_command_sent_;
+        this->ack_resends_ = 0;
         ESP_LOGI(TAG, "[COUNTER_RECOVERY] Starting CHECK-based recovery for blind 0x%06x - %s command failed, original_counter=%d",
                  this->command_.blind_addr, cmd_name, this->original_counter_);
       }
@@ -493,6 +522,7 @@ void EleroCover::check_silent_failure() {
 
         this->waiting_for_response_ = false;
         this->counter_recovery_attempts_ = 0;
+        this->recovery_command_ = 0;
       }
     }
   }
@@ -582,6 +612,10 @@ void EleroCover::start_movement(CoverOperation dir) {
       this->commands_to_send_.push(this->command_stop_);
     break;
   }
+
+  // A new user command supersedes any pending resend or recovery replay
+  this->ack_resends_ = 0;
+  this->recovery_command_ = 0;
 
   if(dir == this->current_operation) {
     ESP_LOGV(TAG, "MOVEMENT SKIP: Already in %s state, ignoring duplicate command", dir_name);
@@ -684,6 +718,8 @@ void EleroCover::sync_counter(uint8_t remote_cnt) {
              this->command_.blind_addr);
     this->counter_recovery_attempts_ = 0;
   }
+  this->recovery_command_ = 0;
+  this->ack_resends_ = 0;
 
   // Clear any queued commands that would use the old counter
   while (!this->commands_to_send_.empty()) {

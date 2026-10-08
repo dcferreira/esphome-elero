@@ -96,9 +96,15 @@ class EleroCover : public cover::Cover, public Component {
   uint32_t last_rx_{0};  // Timestamp of last received message
   static constexpr uint32_t RESPONSE_TIMEOUT_MS = 10000;  // 10 seconds
   
+  // Fast resend of action commands whose acknowledgement was not heard
+  uint8_t ack_resends_{0};
+  static constexpr uint32_t ACK_TIMEOUT_MS = 1500;
+  static constexpr uint8_t ACK_MAX_RESENDS = 2;
+
   // Counter recovery
   uint8_t counter_recovery_attempts_{0};
   uint8_t original_counter_{0};
+  uint8_t recovery_command_{0};  // Action command to replay once recovery succeeds (0 = none)
 
   // NVS counter persistence
   ESPPreferenceObject counter_pref_;
