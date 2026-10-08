@@ -117,9 +117,7 @@ void Elero::init() {
   this->write_reg(CC1101_FREND0, 0x10);
   this->write_reg(CC1101_MCSM0, 0x18);
   this->write_reg(CC1101_MCSM1, 0x3F);
-  // 0x3D: as 0x1D but with FOC_BS_CS_GATE set, so frequency offset compensation
-  // is frozen until carrier sense instead of drifting on noise between packets.
-  this->write_reg(CC1101_FOCCFG, 0x3D);
+  this->write_reg(CC1101_FOCCFG, 0x1D);
   this->write_reg(CC1101_BSCFG, 0x1F);
   this->write_reg(CC1101_AGCCTRL2, 0xC7);
   this->write_reg(CC1101_AGCCTRL1, 0x00);
