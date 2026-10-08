@@ -55,8 +55,11 @@ void EleroCover::loop() {
   // Don't let a poll CHECK displace an action command still awaiting its ack
   bool awaiting_action_ack = this->waiting_for_response_ &&
                              (this->last_command_sent_ != ELERO_COMMAND_COVER_CHECK);
+  // Relays forward only the latest packet per sender, so keep the air quiet after an action
+  bool action_quiet = !this->commands_to_send_.empty() ||
+                      (this->last_action_sent_time_ > 0 && (now - this->last_action_sent_time_) < ACTION_QUIET_MS);
 
-  if(!desynced && !awaiting_action_ack && (now > this->poll_offset_) && (now - this->poll_offset_ - this->last_poll_) > intvl) {
+  if(!desynced && !awaiting_action_ack && !action_quiet && (now > this->poll_offset_) && (now - this->poll_offset_ - this->last_poll_) > intvl) {
     this->commands_to_send_.push(this->command_check_);
     this->last_poll_ = now - this->poll_offset_;
   }
@@ -168,6 +171,8 @@ void EleroCover::handle_commands(uint32_t now) {
         // Track command for silent failure detection (all commands expect responses)
         this->last_command_sent_time_ = command_start_time;
         this->last_command_sent_ = command_byte;
+        if(command_byte != ELERO_COMMAND_COVER_CHECK)
+          this->last_action_sent_time_ = command_start_time;
         this->waiting_for_response_ = true;
         
         if(this->send_packets_ >= ELERO_SEND_PACKETS) {
