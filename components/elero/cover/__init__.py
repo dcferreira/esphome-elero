@@ -27,6 +27,7 @@ CONF_COMMAND_TILT = "command_tilt"
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_SUPPORTS_TILT = "supports_tilt"
 CONF_CHECK_INTERVAL = "check_interval"
+CONF_COUNTER_DIAGNOSTIC = "counter_diagnostic"
 
 EleroCover = elero_ns.class_("EleroCover", cover.Cover, cg.Component)
 
@@ -84,6 +85,7 @@ CONFIG_SCHEMA = (
             cv.Optional(
                 CONF_CHECK_INTERVAL, default="0s"
             ): cv.positive_time_period_milliseconds,
+            cv.Optional(CONF_COUNTER_DIAGNOSTIC, default=False): cv.boolean,
         }
     )
     .extend(cv.COMPONENT_SCHEMA)
@@ -114,5 +116,6 @@ async def to_code(config):
     cg.add(var.set_poll_interval(config[CONF_POLL_INTERVAL]))
     cg.add(var.set_supports_tilt(config[CONF_SUPPORTS_TILT]))
     cg.add(var.set_check_interval(config[CONF_CHECK_INTERVAL]))
+    cg.add(var.set_counter_diagnostic(config[CONF_COUNTER_DIAGNOSTIC]))
 
     cg.add(parent.register_cover(var))

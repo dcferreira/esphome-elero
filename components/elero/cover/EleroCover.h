@@ -39,6 +39,7 @@ class EleroCover : public cover::Cover, public Component {
   void set_poll_interval(uint32_t intvl) { this->poll_intvl_ = intvl; }
   void set_supports_tilt(bool tilt) { this->supports_tilt_ = tilt; }
   void set_check_interval(uint32_t check_interval_ms) { this->check_interval_ms_ = check_interval_ms; }
+  void set_counter_diagnostic(bool enable) { this->counter_diagnostic_ = enable; }
   uint32_t get_blind_address() { return this->command_.blind_addr; }
   uint32_t get_remote_address() const { return this->command_.remote_addr; }
   void set_rx_state(uint8_t state);
@@ -61,6 +62,7 @@ class EleroCover : public cover::Cover, public Component {
   void queue_action(uint8_t cmd);
   void check_silent_failure();
   uint8_t get_sweep_counter(uint8_t original, uint8_t attempt_index);
+  void run_counter_diagnostic(uint32_t now);
 
   static constexpr uint8_t RECOVERY_SWEEP_RANGE = 50;
   static constexpr uint8_t RECOVERY_MAX_ATTEMPTS = 10;
@@ -100,9 +102,9 @@ class EleroCover : public cover::Cover, public Component {
   
   // Fast resend of action commands whose acknowledgement was not heard
   uint8_t ack_resends_{0};
-  static constexpr uint32_t ACK_TIMEOUT_MS = 3000;  // relayed acks arrive in up to ~1.5 s
+  static constexpr uint32_t ACK_TIMEOUT_MS = 2000;  // relayed acks arrive in up to ~1.5 s
   static constexpr uint32_t ACTION_QUIET_MS = 3000;
-  static constexpr uint8_t ACK_MAX_RESENDS = 2;
+  static constexpr uint8_t ACK_MAX_RESENDS = 5;  // only a fraction of packets get relayed, so retry more
 
   // Counter recovery
   uint8_t counter_recovery_attempts_{0};
@@ -128,6 +130,22 @@ class EleroCover : public cover::Cover, public Component {
   // Remote activity cooldown: don't send commands while the physical remote is active
   uint32_t last_remote_activity_{0};  // Last time we overheard the physical remote
   static constexpr uint32_t REMOTE_COOLDOWN_MS = 5000;  // Wait 5s after last remote packet
+
+  // One-shot per-counter CHECK diagnostic: after boot, send CHECKs with explicit
+  // counters (shuffled, several rounds) to test whether relay/reply success
+  // depends on the counter value. Uses copies of command_; the real counter is untouched.
+  static constexpr uint32_t DIAG_START_MS = 90000;     // wait for API/logger to connect
+  static constexpr uint32_t DIAG_INTERVAL_MS = 2500;
+  static constexpr uint8_t DIAG_FIRST_COUNTER = 190;
+  static constexpr uint8_t DIAG_NUM_COUNTERS = 24;     // counters 190..213
+  static constexpr uint8_t DIAG_ROUNDS = 3;
+  bool counter_diagnostic_{false};
+  bool diag_active_{false};
+  bool diag_done_{false};
+  uint8_t diag_round_{0};
+  uint8_t diag_idx_{0};
+  uint32_t diag_last_send_{0};
+  uint8_t diag_order_[DIAG_ROUNDS][DIAG_NUM_COUNTERS];
 };
 
 } // namespace elero

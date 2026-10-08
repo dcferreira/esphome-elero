@@ -1,6 +1,7 @@
 #include "EleroCover.h"
 #include "esphome/core/log.h"
 #include <cinttypes>
+#include <utility>
 
 namespace esphome {
 namespace elero {
@@ -41,6 +42,10 @@ void EleroCover::setup() {
 void EleroCover::loop() {
   uint32_t intvl = this->poll_intvl_;
   uint32_t now = millis();
+
+  if (this->counter_diagnostic_ && !this->diag_done_)
+    this->run_counter_diagnostic(now);
+
   if(this->current_operation != COVER_OPERATION_IDLE) {
     if((now - ELERO_TIMEOUT_MOVEMENT) < this->movement_start_) // do not poll frequently for an extended period of time
       intvl = ELERO_POLL_INTERVAL_MOVING;
@@ -59,7 +64,7 @@ void EleroCover::loop() {
   bool action_quiet = !this->commands_to_send_.empty() ||
                       (this->last_action_sent_time_ > 0 && (now - this->last_action_sent_time_) < ACTION_QUIET_MS);
 
-  if(!desynced && !awaiting_action_ack && !action_quiet && (now > this->poll_offset_) && (now - this->poll_offset_ - this->last_poll_) > intvl) {
+  if(!this->diag_active_ && !desynced && !awaiting_action_ack && !action_quiet && (now > this->poll_offset_) && (now - this->poll_offset_ - this->last_poll_) > intvl) {
     this->commands_to_send_.push(this->command_check_);
     this->last_poll_ = now - this->poll_offset_;
   }
@@ -125,7 +130,7 @@ void EleroCover::handle_commands(uint32_t now) {
   // Suppress when desynced (no response for >30s) to conserve counter values
   bool is_desynced = (this->last_successful_rx_ > 0) &&
                      (now - this->last_successful_rx_) > DESYNC_THRESHOLD_MS;
-  if (!is_desynced && check_interval_ms_ > 0 && (now - last_check_time_) > check_interval_ms_) {
+  if (!this->diag_active_ && !is_desynced && check_interval_ms_ > 0 && (now - last_check_time_) > check_interval_ms_) {
     // Only send CHECK if we're not currently processing commands
     if (this->commands_to_send_.empty() && !this->waiting_for_response_) {
       ESP_LOGD(TAG, "PERIODIC CHECK: Sending CHECK command to blind 0x%06x (interval=%dms)",
@@ -385,6 +390,10 @@ void EleroCover::set_rx_state(uint8_t state) {
 }
 
 void EleroCover::check_silent_failure() {
+  // Diagnostic CHECKs don't set waiting_for_response_; don't let a stray
+  // CHECK timeout start a recovery sweep mid-diagnostic.
+  if (this->diag_active_ && this->last_command_sent_ == ELERO_COMMAND_COVER_CHECK)
+    return;
   if (this->waiting_for_response_) {
     uint32_t elapsed = millis() - this->last_command_sent_time_;
 
@@ -543,6 +552,68 @@ uint8_t EleroCover::get_sweep_counter(uint8_t original, uint8_t attempt_index) {
   if (result > 255)
     result -= 255;
   return (uint8_t)result;
+}
+
+void EleroCover::run_counter_diagnostic(uint32_t now) {
+  if (!this->diag_active_) {
+    // Start only once the cover is idle and nothing else is in flight
+    if (now < DIAG_START_MS || this->current_operation != COVER_OPERATION_IDLE ||
+        !this->commands_to_send_.empty() || this->waiting_for_response_ ||
+        this->counter_recovery_attempts_ > 0)
+      return;
+
+    // Reproducible shuffles: Fisher-Yates driven by a fixed-seed LCG
+    uint32_t seed = 0x5eed1234;
+    for (uint8_t r = 0; r < DIAG_ROUNDS; r++) {
+      for (uint8_t i = 0; i < DIAG_NUM_COUNTERS; i++)
+        this->diag_order_[r][i] = DIAG_FIRST_COUNTER + i;
+      for (uint8_t i = DIAG_NUM_COUNTERS - 1; i > 0; i--) {
+        seed = seed * 1664525UL + 1013904223UL;
+        uint8_t j = (seed >> 16) % (i + 1);
+        std::swap(this->diag_order_[r][i], this->diag_order_[r][j]);
+      }
+      char buf[DIAG_NUM_COUNTERS * 4 + 1];
+      size_t pos = 0;
+      for (uint8_t i = 0; i < DIAG_NUM_COUNTERS; i++)
+        pos += snprintf(buf + pos, sizeof(buf) - pos, "%s%d", i ? "," : "", this->diag_order_[r][i]);
+      ESP_LOGW(TAG, "DIAG ORDER: blind 0x%06x round=%d [%s]", this->command_.blind_addr, r, buf);
+    }
+    ESP_LOGW(TAG, "DIAG START: blind 0x%06x, %d counters x %d rounds, every %" PRIu32 "ms (real counter=%d untouched)",
+             this->command_.blind_addr, DIAG_NUM_COUNTERS, DIAG_ROUNDS, DIAG_INTERVAL_MS, this->command_.counter);
+    this->diag_active_ = true;
+    this->diag_round_ = 0;
+    this->diag_idx_ = 0;
+    this->diag_last_send_ = now - DIAG_INTERVAL_MS;
+  }
+
+  // Pause while a real command is in progress
+  if (this->current_operation != COVER_OPERATION_IDLE || !this->commands_to_send_.empty())
+    return;
+  if ((now - this->diag_last_send_) < DIAG_INTERVAL_MS)
+    return;
+
+  if (this->diag_round_ >= DIAG_ROUNDS) {
+    // One interval after the last send, so its reply has had time to arrive
+    ESP_LOGW(TAG, "DIAG DONE: blind 0x%06x", this->command_.blind_addr);
+    this->diag_active_ = false;
+    this->diag_done_ = true;
+    return;
+  }
+
+  uint8_t c = this->diag_order_[this->diag_round_][this->diag_idx_];
+  t_elero_command check = this->command_;
+  check.counter = c;
+  check.payload[4] = this->command_check_;
+  ESP_LOGW(TAG, "DIAG SEND: blind 0x%06x counter=%d round=%d idx=%d",
+           this->command_.blind_addr, c, this->diag_round_, this->diag_idx_);
+  if (!this->parent_->send_command(&check))
+    ESP_LOGW(TAG, "DIAG TX FAILED: blind 0x%06x counter=%d", this->command_.blind_addr, c);
+  this->diag_last_send_ = now;
+
+  if (++this->diag_idx_ >= DIAG_NUM_COUNTERS) {
+    this->diag_idx_ = 0;
+    this->diag_round_++;
+  }
 }
 
 // Relays forward a sender's packet only when another from the same sender
