@@ -17,6 +17,8 @@ void Elero::loop() {
     ESP_LOGVV(TAG, "loop says \"received\"");
     this->received_ = false;
     uint8_t len = this->read_status(CC1101_RXBYTES);
+    // Frequency offset the demodulator estimated for the last received packet
+    this->last_freqest_ = (int8_t) this->read_status(CC1101_FREQEST);
     uint8_t avail = len & 0x7F;
     if(avail) { // bytes available
       if(avail > CC1101_FIFO_LENGTH) {
@@ -494,8 +496,8 @@ void Elero::interpret_msg() {
     rssi = (float)((this->msg_rx_[length+1])/2-74);
   if(!crc) {
     // Header bytes are not encrypted, so they are usually still informative
-    ESP_LOGW(TAG, "RX CRC FAIL: len=%02d, cnt=%02d, typ=0x%02x, chl=%02d, src=0x%06x, dst=0x%06x, rssi=%2.1f, lqi=%2d",
-             length, cnt, typ, chl, src, dst, rssi, lqi);
+    ESP_LOGW(TAG, "RX CRC FAIL: len=%02d, cnt=%02d, typ=0x%02x, chl=%02d, src=0x%06x, dst=0x%06x, rssi=%2.1f, lqi=%2d, foff=%+.1fkHz",
+             length, cnt, typ, chl, src, dst, rssi, lqi, this->last_freqest_ * 1.587f);
     return;
   }
 
@@ -506,7 +508,7 @@ void Elero::interpret_msg() {
   last_rssi_ = rssi;
   last_lqi_ = lqi;
   
-  ESP_LOGD(TAG, "rcv'd: len=%02d, cnt=%02d, typ=0x%02x, typ2=0x%02x, hop=0x%02x, syst=0x%02x, chl=%02d, src=0x%06x, bwd=0x%06x, fwd=0x%06x, #dst=%02d, dst=0x%06x, rssi=%2.1f, lqi=%2d, crc=%2d, payload=[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]", length, cnt, typ, typ2, hop, syst, chl, src, bwd, fwd, num_dests, dst, rssi, lqi, crc, payload1, payload2, payload[0], payload[1], payload[2], payload[3], payload[4], payload[5], payload[6], payload[7]);
+  ESP_LOGD(TAG, "rcv'd: len=%02d, cnt=%02d, typ=0x%02x, typ2=0x%02x, hop=0x%02x, syst=0x%02x, chl=%02d, src=0x%06x, bwd=0x%06x, fwd=0x%06x, #dst=%02d, dst=0x%06x, rssi=%2.1f, lqi=%2d, crc=%2d, foff=%+.1fkHz, payload=[0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]", length, cnt, typ, typ2, hop, syst, chl, src, bwd, fwd, num_dests, dst, rssi, lqi, crc, this->last_freqest_ * 1.587f, payload1, payload2, payload[0], payload[1], payload[2], payload[3], payload[4], payload[5], payload[6], payload[7]);
 
   if((typ == 0xca) || (typ == 0xc9)) { // Status message from a blind
     // Check if we know the blind

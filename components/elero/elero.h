@@ -163,6 +163,7 @@ class Elero : public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARIT
   uint32_t silent_failures_count_{0};
   float last_rssi_{0.0};
   uint8_t last_lqi_{0};
+  int8_t last_freqest_{0};  // CC1101 FREQEST of the last received packet (units of 26MHz/2^14 = 1.587kHz)
   uint32_t last_successful_communication_{0};
   
   // Response time tracking
