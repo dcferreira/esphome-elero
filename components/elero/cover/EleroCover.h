@@ -58,6 +58,7 @@ class EleroCover : public cover::Cover, public Component {
  protected:
   void control(const cover::CoverCall &call) override;
   void increase_counter();
+  void queue_action(uint8_t cmd);
   void check_silent_failure();
   uint8_t get_sweep_counter(uint8_t original, uint8_t attempt_index);
 

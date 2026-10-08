@@ -69,7 +69,7 @@ void EleroCover::loop() {
   if((this->current_operation != COVER_OPERATION_IDLE) && (this->open_duration_ > 0) && (this->close_duration_ > 0)) {
     this->recompute_position();
     if(this->is_at_target()) {
-      this->commands_to_send_.push(this->command_stop_);
+      this->queue_action(this->command_stop_);
       this->current_operation = COVER_OPERATION_IDLE;
       this->target_position_ = COVER_OPEN;
     }
@@ -266,7 +266,7 @@ void EleroCover::set_rx_state(uint8_t state) {
       if (this->recovery_command_ != 0) {
         ESP_LOGI(TAG, "[COUNTER_RECOVERY] Retrying original command 0x%02x with working counter %d for blind 0x%06x",
                  this->recovery_command_, this->command_.counter, this->command_.blind_addr);
-        this->commands_to_send_.push(this->recovery_command_);
+        this->queue_action(this->recovery_command_);
       }
 
       this->counter_recovery_attempts_ = 0;
@@ -396,7 +396,7 @@ void EleroCover::check_silent_failure() {
       this->ack_resends_++;
       ESP_LOGW(TAG, "NO ACK: resending command 0x%02x to blind 0x%06x (resend %d/%d, no reply after %" PRIu32 "ms)",
                this->last_command_sent_, this->command_.blind_addr, this->ack_resends_, ACK_MAX_RESENDS, elapsed);
-      this->commands_to_send_.push(this->last_command_sent_);
+      this->queue_action(this->last_command_sent_);
       this->waiting_for_response_ = false;
       return;
     }
@@ -545,6 +545,14 @@ uint8_t EleroCover::get_sweep_counter(uint8_t original, uint8_t attempt_index) {
   return (uint8_t)result;
 }
 
+// Relays forward a sender's packet only when another from the same sender
+// preceded it shortly, so send each action as a back-to-back pair (each
+// packet gets its own counter). Repeating UP/DOWN/STOP is harmless.
+void EleroCover::queue_action(uint8_t cmd) {
+  this->commands_to_send_.push(cmd);
+  this->commands_to_send_.push(cmd);
+}
+
 void EleroCover::increase_counter() {
   if(this->command_.counter == 0xff)
     this->command_.counter = 1;
@@ -569,7 +577,7 @@ void EleroCover::control(const cover::CoverCall &call) {
   if (call.get_tilt().has_value()) {
     auto tilt = *call.get_tilt();
     if(tilt > 0) {
-      this->commands_to_send_.push(this->command_tilt_);
+      this->queue_action(this->command_tilt_);
       this->tilt = 1.0;
     } else {
       this->tilt = 0.0;
@@ -600,21 +608,21 @@ void EleroCover::start_movement(CoverOperation dir) {
   switch(dir) {
     case COVER_OPERATION_OPENING:
       ESP_LOGD(TAG, "MOVEMENT START: OPEN command queued for blind 0x%06x", this->command_.blind_addr);
-      this->commands_to_send_.push(this->command_up_);
+      this->queue_action(this->command_up_);
       // Reset tilt state on movement
       this->tilt = 0.0;
       this->last_operation_ = COVER_OPERATION_OPENING;
     break;
     case COVER_OPERATION_CLOSING:
       ESP_LOGD(TAG, "MOVEMENT START: CLOSE command queued for blind 0x%06x", this->command_.blind_addr);
-      this->commands_to_send_.push(this->command_down_);
+      this->queue_action(this->command_down_);
       // Reset tilt state on movement
       this->tilt = 0.0;
       this->last_operation_ = COVER_OPERATION_CLOSING;
     break;
     case COVER_OPERATION_IDLE:
       ESP_LOGD(TAG, "MOVEMENT START: STOP command queued for blind 0x%06x", this->command_.blind_addr);
-      this->commands_to_send_.push(this->command_stop_);
+      this->queue_action(this->command_stop_);
     break;
   }
 
